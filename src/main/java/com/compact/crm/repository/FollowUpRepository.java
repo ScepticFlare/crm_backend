@@ -17,20 +17,23 @@ public interface FollowUpRepository extends JpaRepository<FollowUp, Long> {
     List<FollowUp> findByOpportunityId(Long opportunityId);
 
     @Query("""
-        SELECT f
-        FROM FollowUp f
-        WHERE
-            (
-                :employee IS NULL
-                OR f.lead.assignedEmployee = :employee
-                OR f.opportunity.lead.assignedEmployee = :employee
-            )
-        AND
-        (
-            LOWER(f.remarks) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(f.activityType.name) LIKE LOWER(CONCAT('%', :search, '%'))
-        )
-    """)
+SELECT f
+FROM FollowUp f
+LEFT JOIN f.lead l
+LEFT JOIN f.opportunity o
+LEFT JOIN o.lead ol
+WHERE
+(
+    :employee IS NULL
+    OR l.assignedEmployee = :employee
+    OR ol.assignedEmployee = :employee
+)
+AND
+(
+    LOWER(COALESCE(f.remarks, '')) LIKE LOWER(CONCAT('%', :search, '%'))
+    OR LOWER(f.activityType.name) LIKE LOWER(CONCAT('%', :search, '%'))
+)
+""")
     Page<FollowUp> searchFollowUps(
             @Param("employee") Employee employee,
             @Param("search") String search,
