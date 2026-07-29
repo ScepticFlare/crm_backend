@@ -5,22 +5,30 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.util.Map;
-
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class LeadReportResponse {
 
-    private long totalLeads;
+    private String month;
 
-    private long wonLeads;
+    private long totalLeadsReceived;
 
-    private long lostLeads;
+    private long invalidLeads;
 
-    private Map<String, Integer> leadsByEmployee;
+    private long validLeads;
 
-    private Map<String, Integer> leadsBySource;
+    private long won;
+
+    private long lost;
+
+    private long inProgress;
+
+    private long postponed;
+
+    private long dropped;
+
+    private double wonConversionRate;
 
 }

@@ -61,7 +61,12 @@ public class OpportunityService {
         return opportunityRepository.save(opportunity);
     }
 
-    public Page<Opportunity> getAllOpportunities(int page, int size, String search) {
+    public Page<Opportunity> getAllOpportunities(
+            int page,
+            int size,
+            String search,
+            String stageName)
+    {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
 
@@ -71,18 +76,14 @@ public class OpportunityService {
             search = "";
         }
 
-        if (currentEmployee.getRole() == Role.ADMIN) {
+        Employee employeeFilter =
+                currentEmployee.getRole() == Role.ADMIN
+                        ? null
+                        : currentEmployee;
 
-            return opportunityRepository.searchOpportunities(
-                    null,
-                    search,
-                    pageable
-            );
-
-        }
-
-        return opportunityRepository.searchOpportunities(
-                currentEmployee,
+        return opportunityRepository.searchOpportunitiesByStage(
+                employeeFilter,
+                stageName,
                 search,
                 pageable
         );

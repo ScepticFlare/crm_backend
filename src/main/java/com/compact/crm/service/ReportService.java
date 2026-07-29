@@ -3,102 +3,161 @@ package com.compact.crm.service;
 import com.compact.crm.dto.response.LeadReportResponse;
 import com.compact.crm.entity.Employee;
 import com.compact.crm.entity.Lead;
-import com.compact.crm.enums.LeadStatus;
-import com.compact.crm.enums.Role;
+import com.compact.crm.entity.Opportunity;
 import com.compact.crm.repository.LeadRepository;
+import com.compact.crm.repository.OpportunityRepository;
 import com.compact.crm.security.CurrentUserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.time.format.TextStyle;
+import java.util.*;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 public class ReportService {
 
     private final LeadRepository leadRepository;
+    private final OpportunityRepository opportunityRepository;
     private final CurrentUserService currentUserService;
 
-    public LeadReportResponse getLeadReport(LocalDate from, LocalDate to) {
+    public List<LeadReportResponse> generateLeadReport(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Long leadSourceId
+    ) {
 
-        Employee currentEmployee = currentUserService.getCurrentEmployee();
-
-        LocalDateTime fromDateTime = from.atStartOfDay();
-        LocalDateTime toDateTime = to.atTime(23, 59, 59);
+        LocalDateTime from = fromDate.atStartOfDay();
+        LocalDateTime to = toDate.plusDays(1).atStartOfDay().minusSeconds(1);
 
         List<Lead> leads;
+        List<Opportunity> opportunities;
 
-        if (currentEmployee.getRole() == Role.ADMIN) {
+        if (currentUserService.isAdmin()) {
 
-            leads = leadRepository.findByCreatedAtBetween(
-                    fromDateTime,
-                    toDateTime
-            );
+            leads = leadRepository.findByCreatedAtBetween(from, to);
+
+            opportunities = opportunityRepository.findByCreatedAtBetween(from, to);
 
         } else {
 
+            Employee employee = currentUserService.getCurrentEmployee();
+
             leads = leadRepository.findByAssignedEmployeeAndCreatedAtBetween(
-                    currentEmployee,
-                    fromDateTime,
-                    toDateTime
+                    employee,
+                    from,
+                    to
             );
 
+            opportunities =
+                    opportunityRepository.findByLeadAssignedEmployeeAndCreatedAtBetween(
+                            employee,
+                            from,
+                            to
+                    );
+        }
+        if (leadSourceId != null) {
+
+            leads = leads.stream()
+                    .filter(lead ->
+                            lead.getLeadSource() != null &&
+                                    lead.getLeadSource().getId().equals(leadSourceId))
+                    .toList();
         }
 
-        long won = 0;
-        long lost = 0;
+        Map<Long, Opportunity> opportunityMap =
+                opportunities.stream()
+                        .collect(Collectors.toMap(
+                                o -> o.getLead().getId(),
+                                Function.identity()
+                        ));
 
-        Map<String, Integer> employeeMap = new HashMap<>();
-        Map<String, Integer> sourceMap = new HashMap<>();
+        Map<String, LeadReportResponse> monthlyReport = new LinkedHashMap<>();
 
         for (Lead lead : leads) {
 
-            if (lead.getLeadStatus() == LeadStatus.WON) {
-                won++;
+            String month =
+                    lead.getCreatedAt()
+                            .getMonth()
+                            .getDisplayName(TextStyle.FULL, Locale.ENGLISH)
+                            + " "
+                            + lead.getCreatedAt().getYear();
+
+            LeadReportResponse row = monthlyReport.computeIfAbsent(
+                    month,
+                    m -> LeadReportResponse.builder()
+                            .month(m)
+                            .totalLeadsReceived(0)
+                            .invalidLeads(0)
+                            .validLeads(0)
+                            .won(0)
+                            .lost(0)
+                            .inProgress(0)
+                            .postponed(0)
+                            .dropped(0)
+                            .wonConversionRate(0)
+                            .build()
+            );
+
+            row.setTotalLeadsReceived(row.getTotalLeadsReceived() + 1);
+
+            if (lead.getLeadValidity().name().equalsIgnoreCase("INVALID")) {
+
+                row.setInvalidLeads(row.getInvalidLeads() + 1);
+                continue;
             }
 
-            if (lead.getLeadStatus() == LeadStatus.LOST) {
-                lost++;
+            row.setValidLeads(row.getValidLeads() + 1);
+
+            Opportunity opportunity =
+                    opportunityMap.get(lead.getId());
+
+            if (opportunity == null) {
+
+                row.setDropped(row.getDropped() + 1);
+                continue;
             }
 
-            if (lead.getAssignedEmployee() != null) {
+            String stage =
+                    opportunity.getSalesStage()
+                            .getName()
+                            .toUpperCase();
 
-                String employeeName =
-                        lead.getAssignedEmployee().getName();
+            switch (stage) {
 
-                employeeMap.put(
-                        employeeName,
-                        employeeMap.getOrDefault(employeeName, 0) + 1
-                );
+                case "WON":
+                    row.setWon(row.getWon() + 1);
+                    break;
 
+                case "LOST":
+                    row.setLost(row.getLost() + 1);
+                    break;
+
+                case "IN_PROGRESS":
+                    row.setInProgress(row.getInProgress() + 1);
+                    break;
+
+                case "POSTPONED":
+                    row.setPostponed(row.getPostponed() + 1);
+                    break;
             }
-
-            if (lead.getLeadSource() != null) {
-
-                String source =
-                        lead.getLeadSource().getName();
-
-                sourceMap.put(
-                        source,
-                        sourceMap.getOrDefault(source, 0) + 1
-                );
-
-            }
-
         }
 
-        return LeadReportResponse.builder()
-                .totalLeads(leads.size())
-                .wonLeads(won)
-                .lostLeads(lost)
-                .leadsByEmployee(employeeMap)
-                .leadsBySource(sourceMap)
-                .build();
+        for (LeadReportResponse row : monthlyReport.values()) {
 
+            if (row.getValidLeads() > 0) {
+
+                row.setWonConversionRate(
+                        (row.getWon() * 100.0)
+                                / row.getValidLeads()
+                );
+            }
+        }
+
+        return new ArrayList<>(monthlyReport.values());
     }
-
 }

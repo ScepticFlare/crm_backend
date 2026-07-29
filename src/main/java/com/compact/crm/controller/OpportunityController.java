@@ -4,9 +4,8 @@ import com.compact.crm.dto.request.OpportunityRequest;
 import com.compact.crm.entity.Opportunity;
 import com.compact.crm.service.OpportunityService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.*;
 import org.springframework.data.domain.Page;
-import java.util.List;
+import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/opportunities")
@@ -24,7 +23,6 @@ public class OpportunityController {
     }
 
     @GetMapping
-
     public Page<Opportunity> getAllOpportunities(
 
             @RequestParam(defaultValue = "0") int page,
@@ -38,7 +36,48 @@ public class OpportunityController {
         return opportunityService.getAllOpportunities(
                 page,
                 size,
-                search
+                search,
+                null
+        );
+
+    }
+
+    @GetMapping("/in-progress")
+    public Page<Opportunity> getInProgressOpportunities(
+
+            @RequestParam(defaultValue = "0") int page,
+
+            @RequestParam(defaultValue = "50") int size,
+
+            @RequestParam(defaultValue = "") String search
+
+    ) {
+
+        return opportunityService.getAllOpportunities(
+                page,
+                size,
+                search,
+                "IN_PROGRESS"
+        );
+
+    }
+
+    @GetMapping("/postponed")
+    public Page<Opportunity> getPostponedOpportunities(
+
+            @RequestParam(defaultValue = "0") int page,
+
+            @RequestParam(defaultValue = "50") int size,
+
+            @RequestParam(defaultValue = "") String search
+
+    ) {
+
+        return opportunityService.getAllOpportunities(
+                page,
+                size,
+                search,
+                "POSTPONED"
         );
 
     }
