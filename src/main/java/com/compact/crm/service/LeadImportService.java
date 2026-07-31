@@ -10,8 +10,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
+import java.time.LocalDateTime;
 import java.util.Iterator;
-import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -31,14 +31,6 @@ public class LeadImportService {
 
             Workbook workbook = WorkbookFactory.create(inputStream);
 
-            Sheet sheet = workbook.getSheetAt(0);
-
-            Iterator<Row> rows = sheet.iterator();
-
-            if (rows.hasNext()) {
-                rows.next();
-            }
-
             Product defaultProduct =
                     productRepository.findByNameIgnoreCase("Online UPS")
                             .orElseThrow(() ->
@@ -57,86 +49,107 @@ public class LeadImportService {
             int imported = 0;
             int skipped = 0;
 
-            while (rows.hasNext()) {
+            // Loop through every sheet in workbook
+            for (int sheetIndex = 0; sheetIndex < workbook.getNumberOfSheets(); sheetIndex++) {
 
-                Row row = rows.next();
+                Sheet sheet = workbook.getSheetAt(sheetIndex);
 
-                String contactPerson = getCellValue(row.getCell(4));
-                String phone = getCellValue(row.getCell(5));
-                String email = getCellValue(row.getCell(6));
-                String company = getCellValue(row.getCell(7));
-                String city = getCellValue(row.getCell(8));
-                String employeeName = getCellValue(row.getCell(9));
-                String validity = getCellValue(row.getCell(10));
-                String status = getCellValue(row.getCell(11));
-                String remarks = getCellValue(row.getCell(13));
-                String finalRemarks = getCellValue(row.getCell(14));
+                Iterator<Row> rows = sheet.iterator();
 
-                if (phone == null || phone.isBlank()) {
-                    System.out.println("Skipped: Missing phone at row " + (row.getRowNum() + 1));
-                    skipped++;
-                    continue;
+                // Skip header row
+                if (rows.hasNext()) {
+                    rows.next();
                 }
 
-                if (leadRepository.existsByPhone(phone)) {
-                    System.out.println("Skipped: Duplicate phone " + phone);
-                    skipped++;
-                    continue;
+                while (rows.hasNext()) {
+
+                    Row row = rows.next();
+
+                    LocalDateTime createdAt = null;
+
+                    Cell dateCell = row.getCell(1);
+
+                    if (dateCell != null && DateUtil.isCellDateFormatted(dateCell)) {
+                        createdAt = dateCell.getLocalDateTimeCellValue();
+                    }
+
+                    String contactPerson = getCellValue(row.getCell(4));
+                    String phone = getCellValue(row.getCell(5));
+                    String email = getCellValue(row.getCell(6));
+                    String company = getCellValue(row.getCell(7));
+                    String city = getCellValue(row.getCell(8));
+                    String employeeName = getCellValue(row.getCell(9));
+                    String validity = getCellValue(row.getCell(10));
+                    String status = getCellValue(row.getCell(11));
+                    String remarks = getCellValue(row.getCell(13));
+                    String finalRemarks = getCellValue(row.getCell(14));
+
+                    if (phone == null || phone.isBlank()) {
+                        System.out.println("Skipped: Missing phone at row " + (row.getRowNum() + 1));
+                        skipped++;
+                        continue;
+                    }
+
+                    phone = cleanPhone(phone);
+
+                    if (leadRepository.existsByPhone(phone)) {
+                        System.out.println("Skipped: Duplicate phone " + phone);
+                        skipped++;
+                        continue;
+                    }
+
+                    company = cleanText(company);
+                    contactPerson = cleanText(contactPerson);
+                    city = cleanText(city);
+
+                    String[] emails = splitEmails(email);
+
+                    if (!emails[0].isBlank()
+                            && leadRepository.existsByEmail(emails[0])) {
+
+                        System.out.println("Skipped: Duplicate email " + emails[0]);
+                        skipped++;
+                        continue;
+                    }
+
+                    Employee assignedEmployee =
+                            employeeRepository.findByNameIgnoreCase(employeeName.trim())
+                                    .orElseGet(() ->
+                                            employeeRepository.findByNameIgnoreCase("Suresh")
+                                                    .orElse(null));
+
+                    Lead lead = new Lead();
+
+                    lead.setCompanyName(company);
+                    lead.setContactPerson(contactPerson);
+
+                    lead.setPhone(phone);
+
+                    lead.setEmail(emails[0]);
+                    lead.setSecondaryEmail(emails[1]);
+
+                    lead.setCity(city);
+
+                    lead.setDescription(remarks);
+                    lead.setFinalRemarks(finalRemarks);
+
+                    lead.setProduct(defaultProduct);
+                    lead.setIndustry(defaultIndustry);
+                    lead.setLeadSource(defaultLeadSource);
+
+                    lead.setAssignedEmployee(assignedEmployee);
+
+                    lead.setLeadValidity(mapValidity(validity));
+                    lead.setLeadStatus(mapStatus(status));
+
+                    if (createdAt != null) {
+                        lead.setCreatedAt(createdAt);
+                    }
+
+                    leadRepository.save(lead);
+
+                    imported++;
                 }
-
-                if (email != null &&
-                        !email.isBlank() &&
-                        leadRepository.existsByEmail(email)) {
-
-                    System.out.println("Skipped: Duplicate email " + email);
-
-                    skipped++;
-                    continue;
-                }
-
-                Employee assignedEmployee =
-                        employeeRepository.findByNameIgnoreCase(employeeName.trim())
-                                .orElseGet(() ->
-                                        employeeRepository.findByNameIgnoreCase("Suresh")
-                                                .orElse(null));
-
-                Lead lead = new Lead();
-
-                company = cleanText(company);
-                contactPerson = cleanText(contactPerson);
-                city = cleanText(city);
-
-                phone = cleanPhone(phone);
-
-                String[] emails = splitEmails(email);
-
-                lead.setCompanyName(company);
-                lead.setContactPerson(contactPerson);
-
-                lead.setPhone(phone);
-
-                lead.setEmail(emails[0]);
-                lead.setSecondaryEmail(emails[1]);
-
-                lead.setCity(city);
-
-                lead.setDescription(remarks);
-                lead.setFinalRemarks(finalRemarks);
-
-                lead.setProduct(defaultProduct);
-                lead.setIndustry(defaultIndustry);
-                lead.setLeadSource(defaultLeadSource);
-
-                lead.setAssignedEmployee(assignedEmployee);
-
-                lead.setLeadValidity(mapValidity(validity));
-
-                lead.setLeadStatus(mapStatus(status));
-
-                leadRepository.save(lead);
-
-                imported++;
-
             }
 
             workbook.close();
@@ -149,7 +162,6 @@ public class LeadImportService {
 
             return e.getMessage();
         }
-
     }
     private LeadStatus mapStatus(String status) {
 
