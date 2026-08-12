@@ -1,0 +1,15 @@
+package com.compact.crm.repository;
+
+import com.compact.crm.entity.Industry;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.Optional;
+
+public interface IndustryRepository extends JpaRepository<Industry, Long> {
+
+    Optional<Industry> findByNameIgnoreCase(String name);
+
+    List<Industry> findByIsActiveTrue();
+
+}
