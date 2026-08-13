@@ -99,6 +99,25 @@ public class LeadController {
 
     }
 
+    @GetMapping("/invalid")
+    public Page<Lead> getInvalidLeads(
+
+            @RequestParam(defaultValue = "0") int page,
+
+            @RequestParam(defaultValue = "50") int size,
+
+            @RequestParam(defaultValue = "") String search,
+
+            @RequestParam(required = false) Integer year,
+
+            @RequestParam(required = false) Integer month
+
+    ) {
+
+        return leadService.getLeadsByStatus(page, size, search, LeadStatus.INVALID, year, month);
+
+    }
+
     @GetMapping("/{id}")
     public Lead getLeadById(@PathVariable Long id) {
         return leadService.getLeadById(id);

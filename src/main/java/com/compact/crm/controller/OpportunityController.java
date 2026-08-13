@@ -177,6 +177,32 @@ public class OpportunityController {
 
     }
 
+    @GetMapping("/invalid")
+    public Page<Opportunity> getInvalidOpportunities(
+
+            @RequestParam(defaultValue = "0") int page,
+
+            @RequestParam(defaultValue = "50") int size,
+
+            @RequestParam(defaultValue = "") String search,
+
+            @RequestParam(required = false) Integer year,
+
+            @RequestParam(required = false) Integer month
+
+    ) {
+
+        return opportunityService.getAllOpportunities(
+                page,
+                size,
+                search,
+                "INVALID",
+                year,
+                month
+        );
+
+    }
+
     @GetMapping("/{id}")
     public Opportunity getOpportunityById(@PathVariable Long id) {
         return opportunityService.getOpportunityById(id);

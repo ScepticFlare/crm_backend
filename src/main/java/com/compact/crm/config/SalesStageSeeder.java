@@ -22,6 +22,7 @@ public class SalesStageSeeder implements CommandLineRunner {
         salesStageService.findOrCreate("LOST");
         salesStageService.findOrCreate("DROPPED");
         salesStageService.findOrCreate("UNRESPONSIVE");
+        salesStageService.findOrCreate("INVALID");
 
     }
 }

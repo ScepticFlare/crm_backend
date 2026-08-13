@@ -8,5 +8,6 @@ public enum LeadStatus {
     WON,
     LOST,
     DROPPED,
-    UNRESPONSIVE
+    UNRESPONSIVE,
+    INVALID
 }

@@ -50,7 +50,7 @@ public interface OpportunityRepository extends JpaRepository<Opportunity, Long> 
         WHERE
             (:employee IS NULL OR o.lead.assignedEmployee = :employee)
         AND
-            o.salesStage.name NOT IN ('WON', 'LOST', 'POSTPONED', 'DROPPED', 'UNRESPONSIVE')
+            o.salesStage.name NOT IN ('WON', 'LOST', 'POSTPONED', 'DROPPED', 'UNRESPONSIVE', 'INVALID')
         AND
             o.createdAt >= :from
         AND

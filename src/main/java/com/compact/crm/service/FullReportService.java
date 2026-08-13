@@ -225,7 +225,7 @@ public class FullReportService {
     // tracked outcomes - matches OpportunityRepository.searchInProgressOpportunities,
     // which the live In Progress list is built on.
     private static final Set<String> NON_IN_PROGRESS_STAGES =
-            Set.of("WON", "LOST", "POSTPONED", "DROPPED", "UNRESPONSIVE");
+            Set.of("WON", "LOST", "POSTPONED", "DROPPED", "UNRESPONSIVE", "INVALID");
 
     private long countInProgress(List<Opportunity> opportunities) {
 
