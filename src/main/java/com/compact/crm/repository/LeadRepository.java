@@ -5,70 +5,24 @@ import com.compact.crm.entity.Lead;
 import com.compact.crm.enums.LeadStatus;
 import com.compact.crm.enums.LeadValidity;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import java.time.LocalDateTime;
 import java.util.List;
-public interface LeadRepository extends JpaRepository<Lead, Long> {
 
-    @Query("""
-        SELECT l
-        FROM Lead l
-        WHERE
-            (:employee IS NULL OR l.assignedEmployee = :employee)
-        AND
-            l.createdAt >= :from
-        AND
-            l.createdAt < :to
-        AND
-        (
-            LOWER(l.companyName) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(l.contactPerson) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(l.phone) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(l.email) LIKE LOWER(CONCAT('%', :search, '%'))
-        )
-    """)
-    Page<Lead> searchLeads(
-            @Param("employee") Employee employee,
-            @Param("search") String search,
-            @Param("from") LocalDateTime from,
-            @Param("to") LocalDateTime to,
-            Pageable pageable
-    );
-
-    @Query("""
-        SELECT l
-        FROM Lead l
-        WHERE
-            (:employee IS NULL OR l.assignedEmployee = :employee)
-        AND
-            l.leadStatus = :status
-        AND
-            l.createdAt >= :from
-        AND
-            l.createdAt < :to
-        AND
-        (
-            LOWER(l.companyName) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(l.contactPerson) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(l.phone) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(l.email) LIKE LOWER(CONCAT('%', :search, '%'))
-        )
-    """)
-    Page<Lead> searchLeadsByStatus(
-            @Param("employee") Employee employee,
-            @Param("status") LeadStatus status,
-            @Param("search") String search,
-            @Param("from") LocalDateTime from,
-            @Param("to") LocalDateTime to,
-            Pageable pageable
-    );
+// JpaSpecificationExecutor backs the combinable search/filter/sort list
+// query (see service.LeadService.searchLeads + specification.LeadSpecifications) -
+// it replaces the old hand-written boolean-flag "searchLeads"/
+// "searchLeadsByStatus" @Query methods that used to live here.
+public interface LeadRepository extends JpaRepository<Lead, Long>, JpaSpecificationExecutor<Lead> {
 
     boolean existsByPhone(String phone);
 
     boolean existsByEmail(String email);
+
+    boolean existsByAssignedEmployeeId(Long employeeId);
     List<Lead> findByCreatedAtBetween(
             LocalDateTime from,
             LocalDateTime to
@@ -141,6 +95,33 @@ public interface LeadRepository extends JpaRepository<Lead, Long> {
             @Param("leadValidity") LeadValidity leadValidity,
             @Param("productId") Long productId,
             @Param("batteryId") Long batteryId
+    );
+
+    // Backs scheduler.StaleLeadScheduler: candidates for automatic
+    // invalidation are leads still in an open/active status (not already
+    // INVALID, and not a resolved outcome like WON/LOST/DROPPED/
+    // UNRESPONSIVE), not yet converted to an Opportunity (that pipeline
+    // governs its own follow-up from that point on), whose own last edit
+    // (updatedAt) predates the cutoff AND that have no FollowUp created or
+    // updated since the cutoff either - "touched" means a real edit to the
+    // Lead itself or genuine follow-up activity, never just being viewed
+    // (viewing never writes updatedAt or a FollowUp row).
+    @Query("""
+        SELECT l FROM Lead l
+        WHERE l.leadStatus IN :activeStatuses
+        AND l.updatedAt < :cutoff
+        AND NOT EXISTS (
+            SELECT 1 FROM FollowUp f
+            WHERE f.lead = l
+            AND (f.updatedAt >= :cutoff OR f.createdAt >= :cutoff)
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM Opportunity o WHERE o.lead = l
+        )
+    """)
+    List<Lead> findStaleActiveLeads(
+            @Param("activeStatuses") List<LeadStatus> activeStatuses,
+            @Param("cutoff") LocalDateTime cutoff
     );
 
 }

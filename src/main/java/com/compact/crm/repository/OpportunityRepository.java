@@ -3,73 +3,27 @@ package com.compact.crm.repository;
 import com.compact.crm.entity.Employee;
 import com.compact.crm.entity.Opportunity;
 import com.compact.crm.enums.LeadValidity;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
-public interface OpportunityRepository extends JpaRepository<Opportunity, Long> {
+// JpaSpecificationExecutor backs the combinable search/filter/sort list
+// query - see service.OpportunityService.searchOpportunities +
+// specification.OpportunitySpecifications, which replace the old
+// hand-written boolean-flag @Query methods that used to live here.
+public interface OpportunityRepository extends JpaRepository<Opportunity, Long>, JpaSpecificationExecutor<Opportunity> {
 
     boolean existsByLeadId(Long leadId);
 
-    @Query("""
-        SELECT o
-        FROM Opportunity o
-        WHERE
-            (:employee IS NULL OR o.lead.assignedEmployee = :employee)
-        AND
-            (:stageName IS NULL OR o.salesStage.name = :stageName)
-        AND
-            o.createdAt >= :from
-        AND
-            o.createdAt < :to
-        AND
-        (
-            LOWER(o.title) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(o.lead.companyName) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(o.lead.contactPerson) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(o.salesStage.name) LIKE LOWER(CONCAT('%', :search, '%'))
-        )
-    """)
-    Page<Opportunity> searchOpportunitiesByStage(
-            @Param("employee") Employee employee,
-            @Param("stageName") String stageName,
-            @Param("search") String search,
-            @Param("from") LocalDateTime from,
-            @Param("to") LocalDateTime to,
-            Pageable pageable
-    );
-
-    @Query("""
-        SELECT o
-        FROM Opportunity o
-        WHERE
-            (:employee IS NULL OR o.lead.assignedEmployee = :employee)
-        AND
-            o.salesStage.name NOT IN ('WON', 'LOST', 'POSTPONED', 'DROPPED', 'UNRESPONSIVE', 'INVALID')
-        AND
-            o.createdAt >= :from
-        AND
-            o.createdAt < :to
-        AND
-        (
-            LOWER(o.title) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(o.lead.companyName) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(o.lead.contactPerson) LIKE LOWER(CONCAT('%', :search, '%'))
-            OR LOWER(o.salesStage.name) LIKE LOWER(CONCAT('%', :search, '%'))
-        )
-    """)
-    Page<Opportunity> searchInProgressOpportunities(
-            @Param("employee") Employee employee,
-            @Param("search") String search,
-            @Param("from") LocalDateTime from,
-            @Param("to") LocalDateTime to,
-            Pageable pageable
-    );
+    // Backs the Lead-delete cascade (LeadService.deleteLead/getDeleteImpact)
+    // - a Lead has at most one Opportunity (enforced by existsByLeadId's
+    // duplicate-conversion check in convertLeadToOpportunity).
+    Optional<Opportunity> findByLeadId(Long leadId);
 
     List<Opportunity> findByCreatedAtBetween(
             LocalDateTime from,

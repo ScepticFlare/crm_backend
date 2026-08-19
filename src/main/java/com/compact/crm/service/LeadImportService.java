@@ -1,9 +1,12 @@
 package com.compact.crm.service;
 
 import com.compact.crm.entity.*;
+import com.compact.crm.enums.ActivityAction;
+import com.compact.crm.enums.ActivityModule;
 import com.compact.crm.enums.LeadStatus;
 import com.compact.crm.enums.LeadValidity;
 import com.compact.crm.repository.*;
+import com.compact.crm.security.CurrentUserService;
 import lombok.RequiredArgsConstructor;
 import org.apache.poi.ss.usermodel.*;
 import org.springframework.stereotype.Service;
@@ -22,6 +25,8 @@ public class LeadImportService {
     private final ProductRepository productRepository;
     private final IndustryRepository industryRepository;
     private final LeadSourceMasterRepository leadSourceRepository;
+    private final CurrentUserService currentUserService;
+    private final ActivityLogService activityLogService;
 
     public String importExcel(MultipartFile file) {
 
@@ -159,6 +164,13 @@ public class LeadImportService {
             }
 
             workbook.close();
+
+            activityLogService.log(
+                    currentUserService.getCurrentEmployee(),
+                    ActivityModule.LEAD, ActivityAction.IMPORT,
+                    null, null,
+                    "Imported " + imported + " lead(s), skipped " + skipped
+            );
 
             return "Imported : " + imported + " | Skipped : " + skipped;
 

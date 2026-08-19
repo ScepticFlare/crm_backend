@@ -1,9 +1,7 @@
 package com.compact.crm.dto.request;
 
-import com.compact.crm.enums.Role;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -30,6 +28,18 @@ public class EmployeeRequest {
     @Size(min = 8, message = "Password must be at least 8 characters long")
     private String password;
 
-    @NotNull(message = "Role is required")
-    private Role role;
+    // Role name (ADMIN / MANAGER / EMPLOYEE), resolved against the roles
+    // table in EmployeeService. String rather than an entity reference so
+    // this DTO stays a plain JSON shape, same as every other request DTO.
+    @NotBlank(message = "Role is required")
+    private String role;
+
+    // Direct manager's employee id, or null for no manager. Only honored
+    // when the caller has EMPLOYEE_MANAGE permission - see EmployeeService.
+    private Long managerId;
+
+    // Active/inactive toggle. Null means "leave as-is" (so existing callers
+    // that don't send this field don't accidentally deactivate someone) -
+    // only honored when the caller has EMPLOYEE_MANAGE, same as role/manager.
+    private Boolean isActive;
 }

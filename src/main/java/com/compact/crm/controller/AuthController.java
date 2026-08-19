@@ -21,4 +21,15 @@ public class AuthController {
 
         return ResponseEntity.ok(authService.authenticate(request));
     }
+
+    // JWTs are stateless - there is nothing server-side to invalidate. This
+    // endpoint exists purely to record a LOGOUT activity entry for the
+    // authenticated caller before the frontend discards its token.
+    @PostMapping("/logout")
+    public ResponseEntity<Void> logout() {
+
+        authService.recordLogout();
+
+        return ResponseEntity.ok().build();
+    }
 }

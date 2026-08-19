@@ -1,40 +1,59 @@
 package com.compact.crm.service;
 
 import com.compact.crm.dto.request.FollowUpRequest;
+import com.compact.crm.dto.response.BulkOperationResult;
+import com.compact.crm.dto.search.FollowUpSearchCriteria;
 import com.compact.crm.entity.ActivityType;
 import com.compact.crm.entity.Employee;
 import com.compact.crm.entity.FollowUp;
 import com.compact.crm.entity.Lead;
 import com.compact.crm.entity.Opportunity;
-import com.compact.crm.enums.Role;
+import com.compact.crm.enums.ActivityAction;
+import com.compact.crm.enums.ActivityModule;
+import com.compact.crm.enums.FollowUpStatus;
 import com.compact.crm.exception.ResourceNotFoundException;
 import com.compact.crm.repository.ActivityTypeRepository;
 import com.compact.crm.repository.EmployeeRepository;
 import com.compact.crm.repository.FollowUpRepository;
 import com.compact.crm.repository.LeadRepository;
 import com.compact.crm.repository.OpportunityRepository;
+import com.compact.crm.security.AccessControlService;
 import com.compact.crm.security.CurrentUserService;
+import com.compact.crm.specification.FollowUpSpecifications;
+import com.compact.crm.specification.SpecificationUtil;
+import com.compact.crm.util.SortWhitelist;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import java.time.LocalDate;
+import org.springframework.data.domain.Sort;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+import static com.compact.crm.security.AccessControlService.FOLLOWUP_DELETE;
+import static com.compact.crm.security.AccessControlService.FOLLOWUP_EXPORT;
+import static com.compact.crm.security.AccessControlService.FOLLOWUP_MANAGE;
+import static com.compact.crm.security.AccessControlService.FOLLOWUP_VIEW;
 
 @Service
 @RequiredArgsConstructor
 public class FollowUpService {
 
-    // Sentinel "no filter" bounds for the Month filter. Using always-non-null
-    // parameters (rather than a nullable param + "(:from IS NULL OR ...)"
-    // JPQL pattern) avoids a PostgreSQL/pgjdbc limitation where it cannot
-    // determine a bind parameter's data type when that parameter is only
-    // ever compared via "? IS NULL" - it needs a concrete typed value.
-    private static final LocalDateTime MIN_DATE = LocalDateTime.of(1900, 1, 1, 0, 0);
-    private static final LocalDateTime MAX_DATE = LocalDateTime.of(2100, 1, 1, 0, 0);
+    private static final Map<String, String> SORT_FIELDS = Map.of(
+            "scheduledDate", "scheduledDate",
+            "status", "status",
+            "activityType", "activityType.name",
+            "employee", "employee.name",
+            "createdDate", "createdAt"
+    );
+
+    private static final int EXPORT_MAX_ROWS = 20_000;
 
     private final FollowUpRepository followUpRepository;
     private final LeadRepository leadRepository;
@@ -42,6 +61,21 @@ public class FollowUpService {
     private final EmployeeRepository employeeRepository;
     private final ActivityTypeRepository activityTypeRepository;
     private final CurrentUserService currentUserService;
+    private final AccessControlService accessControlService;
+    private final ActivityLogService activityLogService;
+
+    // FollowUp has no title of its own - fall back to whichever parent
+    // (Lead or Opportunity) it belongs to, matching how the FollowUps list
+    // UI already identifies a row.
+    private String followUpEntityName(FollowUp followUp) {
+        if (followUp.getLead() != null) {
+            return followUp.getLead().getCompanyName();
+        }
+        if (followUp.getOpportunity() != null) {
+            return followUp.getOpportunity().getTitle();
+        }
+        return null;
+    }
 
     public FollowUp createFollowUp(FollowUpRequest request) {
 
@@ -65,21 +99,11 @@ public class FollowUpService {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
 
-        if (currentEmployee.getRole() != Role.ADMIN) {
+        Employee parentOwner = lead != null
+                ? lead.getAssignedEmployee()
+                : opportunity.getLead().getAssignedEmployee();
 
-            Employee owner;
-
-            if (lead != null) {
-                owner = lead.getAssignedEmployee();
-            } else {
-                owner = opportunity.getLead().getAssignedEmployee();
-            }
-
-            if (!owner.getId().equals(currentEmployee.getId())) {
-                throw new AccessDeniedException(
-                        "You are not authorized to create follow-ups for this record.");
-            }
-        }
+        accessControlService.assertCanAccess(currentEmployee, FOLLOWUP_MANAGE, parentOwner.getId());
 
         Employee employee = employeeRepository.findById(request.getEmployeeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found"));
@@ -99,56 +123,145 @@ public class FollowUpService {
                 .remarks(request.getRemarks())
                 .build();
 
-        return followUpRepository.save(followUp);
-    }
-    public Page<FollowUp> getAllFollowUps(int page, int size, String search, Integer year, Integer month) {
+        FollowUp saved = followUpRepository.save(followUp);
 
-        Employee currentEmployee = currentUserService.getCurrentEmployee();
-
-        Pageable pageable = PageRequest.of(page, size);
-
-        if (search == null) {
-            search = "";
-        }
-
-        LocalDateTime from = MIN_DATE;
-        LocalDateTime to = MAX_DATE;
-
-        if (year != null && month != null) {
-            from = LocalDate.of(year, month, 1).atStartOfDay();
-            to = from.plusMonths(1);
-        }
-
-        if (currentEmployee.getRole() == Role.ADMIN) {
-
-            return followUpRepository.searchFollowUps(
-                    null,
-                    search,
-                    from,
-                    to,
-                    pageable
-            );
-
-        }
-
-        return followUpRepository.searchFollowUps(
+        activityLogService.log(
                 currentEmployee,
-                search,
-                from,
-                to,
-                pageable
+                ActivityModule.FOLLOWUP, ActivityAction.CREATE,
+                saved.getId(), followUpEntityName(saved),
+                "Created follow-up"
         );
 
+        return saved;
+    }
+    public Page<FollowUp> searchFollowUps(
+            FollowUpSearchCriteria criteria, int page, int size, String sortBy, String sortDir) {
+
+        Employee currentEmployee = currentUserService.getCurrentEmployee();
+        List<Long> employeeIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, FOLLOWUP_VIEW);
+
+        Specification<FollowUp> spec = buildSpecification(criteria, employeeIds);
+        Sort sort = SortWhitelist.resolve(sortBy, sortDir, SORT_FIELDS, "scheduledDate");
+
+        return followUpRepository.findAll(spec, PageRequest.of(page, size, sort));
+    }
+
+    public List<FollowUp> findForExport(
+            FollowUpSearchCriteria criteria, List<Long> ids, String sortBy, String sortDir) {
+
+        Employee currentEmployee = currentUserService.getCurrentEmployee();
+        accessControlService.requirePermission(currentEmployee, FOLLOWUP_EXPORT);
+        List<Long> employeeIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, FOLLOWUP_VIEW);
+
+        Specification<FollowUp> spec = buildSpecification(criteria, employeeIds);
+
+        if (ids != null && !ids.isEmpty()) {
+            Specification<FollowUp> idSpec = FollowUpSpecifications.hasIds(ids);
+            spec = (spec == null) ? idSpec : spec.and(idSpec);
+        }
+
+        Sort sort = SortWhitelist.resolve(sortBy, sortDir, SORT_FIELDS, "scheduledDate");
+        Pageable pageable = PageRequest.of(0, EXPORT_MAX_ROWS, sort);
+
+        List<FollowUp> followUps = followUpRepository.findAll(spec, pageable).getContent();
+
+        activityLogService.log(
+                currentEmployee,
+                ActivityModule.FOLLOWUP, ActivityAction.EXPORT,
+                null, null,
+                "Exported " + followUps.size() + " follow-up(s)"
+        );
+
+        return followUps;
+    }
+
+    public BulkOperationResult bulkDeleteFollowUps(List<Long> ids) {
+
+        Employee currentEmployee = currentUserService.getCurrentEmployee();
+        accessControlService.requirePermission(currentEmployee, FOLLOWUP_DELETE);
+
+        List<Long> succeeded = new ArrayList<>();
+        List<Long> skipped = new ArrayList<>();
+
+        for (Long id : ids) {
+
+            Optional<FollowUp> followUpOpt = followUpRepository.findById(id);
+
+            if (followUpOpt.isEmpty()) {
+                skipped.add(id);
+                continue;
+            }
+
+            FollowUp followUp = followUpOpt.get();
+
+            Employee owner = followUp.getLead() != null
+                    ? followUp.getLead().getAssignedEmployee()
+                    : followUp.getOpportunity().getLead().getAssignedEmployee();
+
+            try {
+
+                accessControlService.assertCanAccess(currentEmployee, FOLLOWUP_DELETE, owner.getId());
+                followUpRepository.delete(followUp);
+                succeeded.add(id);
+
+                activityLogService.log(
+                        currentEmployee,
+                        ActivityModule.FOLLOWUP, ActivityAction.DELETE,
+                        followUp.getId(), followUpEntityName(followUp),
+                        "Deleted follow-up"
+                );
+
+            } catch (AccessDeniedException e) {
+                skipped.add(id);
+            }
+        }
+
+        return new BulkOperationResult(succeeded, skipped);
+    }
+
+    private Specification<FollowUp> buildSpecification(FollowUpSearchCriteria criteria, List<Long> employeeIds) {
+
+        LocalDateTime scheduledFrom = criteria.getScheduledFrom() != null
+                ? criteria.getScheduledFrom().atStartOfDay() : null;
+
+        LocalDateTime scheduledTo = criteria.getScheduledTo() != null
+                ? criteria.getScheduledTo().plusDays(1).atStartOfDay() : null;
+
+        return SpecificationUtil.and(java.util.Arrays.asList(
+                FollowUpSpecifications.ownerIn(employeeIds),
+                FollowUpSpecifications.search(criteria.getSearch()),
+                FollowUpSpecifications.hasStatus(criteria.getStatus()),
+                FollowUpSpecifications.hasActivityTypeId(criteria.getActivityTypeId()),
+                FollowUpSpecifications.hasEmployeeId(criteria.getAssignedEmployeeId()),
+                FollowUpSpecifications.hasLeadId(criteria.getLeadId()),
+                FollowUpSpecifications.hasOpportunityId(criteria.getOpportunityId()),
+                FollowUpSpecifications.scheduledBetween(scheduledFrom, scheduledTo)
+        ));
     }
 
     public FollowUp getFollowUpById(Long id) {
 
-        return getAuthorizedFollowUp(id);
+        FollowUp followUp = getAuthorizedFollowUp(id, FOLLOWUP_VIEW);
+
+        activityLogService.log(
+                currentUserService.getCurrentEmployee(),
+                ActivityModule.FOLLOWUP, ActivityAction.VIEW,
+                followUp.getId(), followUpEntityName(followUp),
+                "Viewed follow-up"
+        );
+
+        return followUp;
     }
 
     public FollowUp updateFollowUp(Long id, FollowUpRequest request) {
 
-        FollowUp followUp = getAuthorizedFollowUp(id);
+        FollowUp followUp = getAuthorizedFollowUp(id, FOLLOWUP_MANAGE);
+
+        // Captured before mutation so the write path below can tell a plain
+        // field edit from a genuine PENDING/... -> COMPLETED transition -
+        // there's no separate "complete" endpoint today, so this diff is
+        // the only way to log FOLLOWUP.COMPLETE distinctly from UPDATE.
+        FollowUpStatus previousStatus = followUp.getStatus();
 
         Lead lead = null;
         Opportunity opportunity = null;
@@ -163,21 +276,15 @@ public class FollowUpService {
                     .orElseThrow(() -> new ResourceNotFoundException("Opportunity not found"));
         }
 
-        if (currentUserService.getCurrentEmployee().getRole() != Role.ADMIN) {
+        Employee newParentOwner = lead != null
+                ? lead.getAssignedEmployee()
+                : opportunity.getLead().getAssignedEmployee();
 
-            Employee owner;
-
-            if (lead != null) {
-                owner = lead.getAssignedEmployee();
-            } else {
-                owner = opportunity.getLead().getAssignedEmployee();
-            }
-
-            if (!owner.getId().equals(currentUserService.getCurrentEmployee().getId())) {
-                throw new AccessDeniedException(
-                        "You are not authorized to move this follow-up.");
-            }
-        }
+        accessControlService.assertCanAccess(
+                currentUserService.getCurrentEmployee(),
+                FOLLOWUP_MANAGE,
+                newParentOwner.getId()
+        );
 
         Employee employee = employeeRepository.findById(request.getEmployeeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found"));
@@ -194,7 +301,20 @@ public class FollowUpService {
         followUp.setCompletedDate(request.getCompletedDate());
         followUp.setRemarks(request.getRemarks());
 
-        return followUpRepository.save(followUp);
+        FollowUp saved = followUpRepository.save(followUp);
+
+        boolean justCompleted = previousStatus != FollowUpStatus.COMPLETED
+                && saved.getStatus() == FollowUpStatus.COMPLETED;
+
+        activityLogService.log(
+                currentUserService.getCurrentEmployee(),
+                ActivityModule.FOLLOWUP,
+                justCompleted ? ActivityAction.COMPLETE : ActivityAction.UPDATE,
+                saved.getId(), followUpEntityName(saved),
+                justCompleted ? "Completed follow-up" : "Updated follow-up"
+        );
+
+        return saved;
     }
 
     public List<FollowUp> getFollowUpsByLead(Long leadId) {
@@ -204,11 +324,11 @@ public class FollowUpService {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
 
-        if (currentEmployee.getRole() != Role.ADMIN &&
-                !lead.getAssignedEmployee().getId().equals(currentEmployee.getId())) {
-
-            throw new AccessDeniedException("You are not authorized.");
-        }
+        accessControlService.assertCanAccess(
+                currentEmployee,
+                FOLLOWUP_VIEW,
+                lead.getAssignedEmployee().getId()
+        );
 
         return followUpRepository.findByLeadId(leadId);
     }
@@ -220,32 +340,35 @@ public class FollowUpService {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
 
-        if (currentEmployee.getRole() != Role.ADMIN &&
-                !opportunity.getLead().getAssignedEmployee().getId().equals(currentEmployee.getId())) {
-
-            throw new AccessDeniedException("You are not authorized.");
-        }
+        accessControlService.assertCanAccess(
+                currentEmployee,
+                FOLLOWUP_VIEW,
+                opportunity.getLead().getAssignedEmployee().getId()
+        );
 
         return followUpRepository.findByOpportunityId(opportunityId);
     }
 
     public void deleteFollowUp(Long id) {
 
-        FollowUp followUp = getAuthorizedFollowUp(id);
+        FollowUp followUp = getAuthorizedFollowUp(id, FOLLOWUP_DELETE);
 
         followUpRepository.delete(followUp);
+
+        activityLogService.log(
+                currentUserService.getCurrentEmployee(),
+                ActivityModule.FOLLOWUP, ActivityAction.DELETE,
+                followUp.getId(), followUpEntityName(followUp),
+                "Deleted follow-up"
+        );
     }
 
-    private FollowUp getAuthorizedFollowUp(Long id) {
+    private FollowUp getAuthorizedFollowUp(Long id, String permissionCode) {
 
         FollowUp followUp = followUpRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("FollowUp not found"));
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
-
-        if (currentEmployee.getRole() == Role.ADMIN) {
-            return followUp;
-        }
 
         Employee owner;
 
@@ -257,10 +380,7 @@ public class FollowUpService {
                     .getAssignedEmployee();
         }
 
-        if (!owner.getId().equals(currentEmployee.getId())) {
-            throw new AccessDeniedException(
-                    "You are not authorized to access this follow-up.");
-        }
+        accessControlService.assertCanAccess(currentEmployee, permissionCode, owner.getId());
 
         return followUp;
     }

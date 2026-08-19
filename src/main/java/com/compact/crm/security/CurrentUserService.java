@@ -25,6 +25,6 @@ public class CurrentUserService {
     }
 
     public boolean isAdmin() {
-        return getCurrentEmployee().getRole().name().equals("ADMIN");
+        return getCurrentEmployee().getRole().getName().equals("ADMIN");
     }
 }

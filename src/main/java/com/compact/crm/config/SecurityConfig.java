@@ -40,11 +40,22 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
 
                 .authorizeHttpRequests(auth -> auth
+                        // Only login is unauthenticated by nature (that's
+                        // how a token is obtained in the first place).
+                        // logout is intentionally NOT under this - it
+                        // records an activity entry for "the authenticated
+                        // caller", so it must require a valid token like
+                        // every other resource (see AuthController.logout /
+                        // AuthService.recordLogout).
                         .requestMatchers(
-                                "/api/auth/**",
-                                "/api/employees/**"
+                                "/api/auth/login"
                         ).permitAll()
 
+                        // Employee-management endpoints previously allowed
+                        // unauthenticated access here; they now require a
+                        // valid token like every other resource. Fine-grained
+                        // (admin-only vs self-service) checks happen in
+                        // EmployeeService via AccessControlService.
                         .anyRequest().authenticated()
                 )
 
@@ -69,6 +80,7 @@ public class SecurityConfig {
 
         configuration.setAllowedOrigins(List.of(
                 "http://localhost:5173",
+                "http://localhost:5174",
                 "https://crm-frontend-q5nk.onrender.com"
         ));
 
