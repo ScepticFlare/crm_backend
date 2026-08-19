@@ -54,16 +54,16 @@ class StaleLeadSchedulerTest {
     }
 
     @Test
-    void marksEachReturnedLeadInvalid_andLogsTheAutomaticAction() {
+    void marksEachReturnedLeadInactive_andLogsTheAutomaticAction() {
 
         Lead staleLead = Lead.builder().id(500L).companyName("Stale Co").leadStatus(LeadStatus.NEW).build();
 
         when(leadRepository.findStaleActiveLeads(anyList(), any(LocalDateTime.class)))
                 .thenReturn(List.of(staleLead));
 
-        scheduler.invalidateStaleLeads();
+        scheduler.deactivateStaleLeads();
 
-        assertThat(staleLead.getLeadStatus()).isEqualTo(LeadStatus.INVALID);
+        assertThat(staleLead.getLeadStatus()).isEqualTo(LeadStatus.INACTIVE);
         verify(leadRepository).save(staleLead);
 
         // actor is null (system action, not an authenticated employee) -
@@ -79,17 +79,17 @@ class StaleLeadSchedulerTest {
         when(leadRepository.findStaleActiveLeads(anyList(), any(LocalDateTime.class)))
                 .thenReturn(List.of());
 
-        scheduler.invalidateStaleLeads();
+        scheduler.deactivateStaleLeads();
 
         verify(leadRepository, never()).save(any(Lead.class));
         verify(activityLogService, never()).log(any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void alreadyInvalidLead_neverReturnedByRepository_isNotReprocessed() {
+    void alreadyInactiveLead_neverReturnedByRepository_isNotReprocessed() {
 
         // The idempotency guarantee lives in the repository query itself
-        // (leadStatus IN activeStatuses excludes INVALID) - this test pins
+        // (leadStatus IN activeStatuses excludes INACTIVE) - this test pins
         // that the scheduler's loop has no separate "already processed"
         // branch that could disagree with it: given an empty result (as
         // the real query would return once every stale lead has already
@@ -97,8 +97,8 @@ class StaleLeadSchedulerTest {
         when(leadRepository.findStaleActiveLeads(anyList(), any(LocalDateTime.class)))
                 .thenReturn(List.of());
 
-        scheduler.invalidateStaleLeads();
-        scheduler.invalidateStaleLeads();
+        scheduler.deactivateStaleLeads();
+        scheduler.deactivateStaleLeads();
 
         verify(leadRepository, times(2)).findStaleActiveLeads(anyList(), any(LocalDateTime.class));
         verify(leadRepository, never()).save(any(Lead.class));

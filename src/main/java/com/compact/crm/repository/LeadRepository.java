@@ -98,8 +98,8 @@ public interface LeadRepository extends JpaRepository<Lead, Long>, JpaSpecificat
     );
 
     // Backs scheduler.StaleLeadScheduler: candidates for automatic
-    // invalidation are leads still in an open/active status (not already
-    // INVALID, and not a resolved outcome like WON/LOST/DROPPED/
+    // deactivation are leads still in an open/active status (not already
+    // INACTIVE or INVALID, and not a resolved outcome like WON/LOST/DROPPED/
     // UNRESPONSIVE), not yet converted to an Opportunity (that pipeline
     // governs its own follow-up from that point on), whose own last edit
     // (updatedAt) predates the cutoff AND that have no FollowUp created or

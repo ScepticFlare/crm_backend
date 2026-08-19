@@ -99,6 +99,22 @@ public class LeadController {
         return leadService.searchLeads(criteria, page, size, sortBy, sortDir);
     }
 
+    // Leads scheduler.StaleLeadScheduler automatically moved to INACTIVE
+    // after 6+ months of no meaningful activity - a separate bucket from
+    // /invalid (genuinely bad/unusable Leads, a manual business judgment).
+    // Same thin-wrapper pattern as every other status bucket above.
+    @GetMapping("/inactive")
+    public Page<Lead> getInactiveLeads(
+            @ModelAttribute LeadSearchCriteria criteria,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "50") int size,
+            @RequestParam(required = false) String sortBy,
+            @RequestParam(required = false) String sortDir
+    ) {
+        criteria.setStatus(LeadStatus.INACTIVE);
+        return leadService.searchLeads(criteria, page, size, sortBy, sortDir);
+    }
+
     @GetMapping("/{id}")
     public Lead getLeadById(@PathVariable Long id) {
         return leadService.getLeadById(id);

@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Real-database verification of LeadRepository.findStaleActiveLeads - the
  * query backing scheduler.StaleLeadScheduler's 6-month stale-lead ->
- * Invalid business rule. A Mockito-based scheduler test can only confirm
+ * Inactive business rule. A Mockito-based scheduler test can only confirm
  * the loop wires status flips + logging correctly given a stubbed list;
  * only a real query against real rows (and real @PrePersist/@PreUpdate
  * timestamp behavior) can confirm which leads actually get selected.
@@ -137,7 +137,21 @@ class StaleLeadRepositoryIntegrationTest {
     @Test
     void alreadyInvalidLead_isNeverReselected_evenIfVeryOld() {
 
+        // INVALID is a separate, manually-set business judgment (a
+        // genuinely bad/unusable Lead) - the stale-lead job must never
+        // touch it, exactly like every other resolved/terminal status.
         Lead lead = saveLead("Already Invalid Co", LeadStatus.INVALID);
+        backdateUpdatedAt(lead, LocalDateTime.now().minusMonths(12));
+
+        List<Lead> stale = leadRepository.findStaleActiveLeads(ACTIVE_STATUSES, LocalDateTime.now().minusMonths(6));
+
+        assertThat(stale).isEmpty();
+    }
+
+    @Test
+    void alreadyInactiveLead_isNeverReselected_evenIfVeryOld() {
+
+        Lead lead = saveLead("Already Inactive Co", LeadStatus.INACTIVE);
         backdateUpdatedAt(lead, LocalDateTime.now().minusMonths(12));
 
         List<Lead> stale = leadRepository.findStaleActiveLeads(ACTIVE_STATUSES, LocalDateTime.now().minusMonths(6));

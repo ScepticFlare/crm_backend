@@ -17,12 +17,16 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.List;
 
-// Automatic stale-lead -> Invalid transition (business rule: a Lead with no
-// meaningful activity for staleAfterMonths+ becomes Invalid on its own,
-// without anyone needing to open the Leads page). Reuses the existing
-// LeadStatus.INVALID value - the same one the "Invalid Leads" page/route
-// (LeadController.getInvalidLeads) already filters by - rather than
-// introducing a second invalid concept alongside it.
+// Automatic stale-lead -> Inactive transition (business rule: a Lead with
+// no meaningful activity for staleAfterMonths+ becomes Inactive on its own,
+// without anyone needing to open the Leads page). Uses the dedicated
+// LeadStatus.INACTIVE value - deliberately NOT LeadStatus.INVALID, which
+// represents a genuinely bad/unusable Lead (a business judgment, set
+// manually) rather than one that simply went cold. The "Inactive Leads"
+// page/route (LeadController.getInactiveLeads) filters on INACTIVE the
+// same way the pre-existing "Invalid Leads" page filters on INVALID -
+// same pattern, separate status, so this job never touches the Invalid
+// workflow at all.
 //
 // "Touched" = LeadRepository.findStaleActiveLeads: the Lead's own
 // updatedAt (bumped by LeadService.createLead/updateLead - see Lead's
@@ -34,11 +38,11 @@ import java.util.List;
 //
 // Only "open" leads (NEW/CONTACTED/QUOTATION_SENT/NEGOTIATION) not yet
 // converted to an Opportunity are eligible - resolved outcomes
-// (WON/LOST/DROPPED/UNRESPONSIVE) and already-INVALID leads are left
-// alone. Idempotency comes from the query itself: once a lead's status
-// flips to INVALID it no longer matches `leadStatus IN activeStatuses` on
-// the next run, so nothing needs a separate "already processed" flag, and
-// no other Lead field is touched.
+// (WON/LOST/DROPPED/UNRESPONSIVE), already-INVALID, and already-INACTIVE
+// leads are left alone. Idempotency comes from the query itself: once a
+// lead's status flips to INACTIVE it no longer matches
+// `leadStatus IN activeStatuses` on the next run, so nothing needs a
+// separate "already processed" flag, and no other Lead field is touched.
 @Component
 @RequiredArgsConstructor
 public class StaleLeadScheduler {
@@ -62,7 +66,7 @@ public class StaleLeadScheduler {
     // crm.lead.stale-check-cron without a code change.
     @Scheduled(cron = "${crm.lead.stale-check-cron:0 0 2 * * *}")
     @Transactional
-    public void invalidateStaleLeads() {
+    public void deactivateStaleLeads() {
 
         LocalDateTime cutoff = LocalDateTime.now().minusMonths(staleAfterMonths);
 
@@ -74,7 +78,7 @@ public class StaleLeadScheduler {
 
         for (Lead lead : staleLeads) {
 
-            lead.setLeadStatus(LeadStatus.INVALID);
+            lead.setLeadStatus(LeadStatus.INACTIVE);
             leadRepository.save(lead);
 
             // actor is null - this is a system action, not performed by any
@@ -83,12 +87,12 @@ public class StaleLeadScheduler {
             activityLogService.log(
                     null, ActivityModule.LEAD, ActivityAction.UPDATE,
                     lead.getId(), lead.getCompanyName(),
-                    "Automatically marked Invalid: no meaningful activity for " + staleAfterMonths + "+ months"
+                    "Automatically marked Inactive: no meaningful activity for " + staleAfterMonths + "+ months"
             );
         }
 
         log.info(
-                "Stale-lead job: marked {} lead(s) Invalid (no activity for {}+ months)",
+                "Stale-lead job: marked {} lead(s) Inactive (no activity for {}+ months)",
                 staleLeads.size(), staleAfterMonths
         );
     }
