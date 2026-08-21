@@ -11,7 +11,6 @@ import org.springframework.web.client.RestClientException;
 
 import java.util.Base64;
 import java.util.List;
-import java.util.Objects;
 
 // Sends Lead emails through Brevo's transactional HTTP API
 // (POST https://api.brevo.com/v3/smtp/email) instead of SMTP - Render
@@ -26,6 +25,7 @@ import java.util.Objects;
 public class BrevoEmailClient {
 
     private static final String SEND_URI = "/smtp/email";
+    private static final String EXPECTED_KEY_PREFIX = "xkeysib-";
 
     private final RestClient restClient;
     private final String fromAddress;
@@ -44,9 +44,43 @@ public class BrevoEmailClient {
     ) {
         this(RestClient.builder()
                 .baseUrl("https://api.brevo.com/v3")
-                .defaultHeader("api-key", apiKey)
+                .defaultHeader("api-key", sanitizeApiKey(apiKey))
                 .defaultHeader("Content-Type", MediaType.APPLICATION_JSON_VALUE)
                 .defaultHeader("Accept", MediaType.APPLICATION_JSON_VALUE), fromAddress, fromName);
+
+        logApiKeyDiagnostics(apiKey);
+    }
+
+    // Strips accidental surrounding whitespace/newline - a common
+    // copy-paste artifact when pasting a secret into a platform's env var
+    // UI. Brevo has no tolerance for it and fails with a generic
+    // "Key not found" rather than anything that points at whitespace.
+    // Package-private and pure so it's directly unit-testable without
+    // needing a live Brevo call.
+    static String sanitizeApiKey(String apiKey) {
+        return apiKey == null ? "" : apiKey.trim();
+    }
+
+    // TEMPORARY diagnostic for the "401 Key not found" investigation - logs
+    // only the shape of the configured key (present/length/whitespace/
+    // quotes/expected prefix), never the key itself. Safe to leave in (no
+    // secret material is logged) but remove once BREVO_API_KEY on Render is
+    // confirmed correct.
+    private static void logApiKeyDiagnostics(String apiKey) {
+
+        boolean blank = apiKey == null || apiKey.isBlank();
+        String trimmed = blank ? "" : apiKey.trim();
+
+        log.info(
+                "Brevo API key diagnostics: present={}, length={}, hasSurroundingWhitespace={}, " +
+                        "containsQuoteChar={}, startsWithExpectedPrefix={}, looksLikeUnresolvedPlaceholder={}",
+                !blank,
+                apiKey == null ? 0 : apiKey.length(),
+                !blank && !apiKey.equals(trimmed),
+                !blank && (apiKey.contains("\"") || apiKey.contains("'")),
+                !blank && trimmed.startsWith(EXPECTED_KEY_PREFIX),
+                !blank && apiKey.contains("${")
+        );
     }
 
     // Package-private: lets tests bind a MockRestServiceServer to the

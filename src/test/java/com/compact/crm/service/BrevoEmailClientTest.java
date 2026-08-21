@@ -10,6 +10,7 @@ import org.springframework.web.client.RestClient;
 import java.util.Base64;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
@@ -128,6 +129,22 @@ class BrevoEmailClientTest {
                 .hasMessage("Unable to send the email. Please try again.");
 
         server.verify();
+    }
+
+    // Covers the "401 Key not found" investigation: a Render env var value
+    // with accidental surrounding whitespace/newline (a common copy-paste
+    // artifact) must not end up verbatim in the api-key header.
+    @Test
+    void sanitizeApiKey_stripsSurroundingWhitespaceAndNewlines() {
+
+        assertThat(BrevoEmailClient.sanitizeApiKey("xkeysib-abc123"))
+                .isEqualTo("xkeysib-abc123");
+        assertThat(BrevoEmailClient.sanitizeApiKey("  xkeysib-abc123  "))
+                .isEqualTo("xkeysib-abc123");
+        assertThat(BrevoEmailClient.sanitizeApiKey("xkeysib-abc123\n"))
+                .isEqualTo("xkeysib-abc123");
+        assertThat(BrevoEmailClient.sanitizeApiKey(null))
+                .isEqualTo("");
     }
 
 }
