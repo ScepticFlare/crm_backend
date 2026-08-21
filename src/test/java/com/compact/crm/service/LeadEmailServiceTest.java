@@ -5,6 +5,7 @@ import com.compact.crm.dto.request.SendLeadEmailRequest;
 import com.compact.crm.dto.response.BulkEmailEligibilityResponse;
 import com.compact.crm.dto.response.BulkEmailResult;
 import com.compact.crm.dto.response.EmailPreviewResponse;
+import com.compact.crm.entity.Document;
 import com.compact.crm.entity.EmailTemplate;
 import com.compact.crm.entity.Employee;
 import com.compact.crm.entity.Lead;
@@ -21,20 +22,16 @@ import com.compact.crm.repository.LeadRepository;
 import com.compact.crm.repository.RolePermissionRepository;
 import com.compact.crm.security.AccessControlService;
 import com.compact.crm.security.CurrentUserService;
-import jakarta.mail.internet.MimeMessage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.mail.MailSendException;
-import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.security.access.AccessDeniedException;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.Properties;
 
 import static com.compact.crm.security.AccessControlService.EMAIL_SEND;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -57,7 +54,7 @@ class LeadEmailServiceTest {
     @Mock private EmailTemplateService emailTemplateService;
     @Mock private DocumentService documentService;
     @Mock private ActivityLogService activityLogService;
-    @Mock private JavaMailSender mailSender;
+    @Mock private BrevoEmailClient brevoEmailClient;
 
     private LeadEmailService leadEmailService;
 
@@ -76,11 +73,8 @@ class LeadEmailServiceTest {
 
         leadEmailService = new LeadEmailService(
                 leadRepository, accessControlService, currentUserService,
-                emailTemplateService, documentService, activityLogService, mailSender
+                emailTemplateService, documentService, activityLogService, brevoEmailClient
         );
-
-        ReflectionTestUtils.setField(leadEmailService, "fromAddress", "sales@compact.example");
-        ReflectionTestUtils.setField(leadEmailService, "fromName", "Compact Systems");
 
         adminRole = Role.builder().id(1L).name("ADMIN").rank(100).build();
         employeeRole = Role.builder().id(3L).name("EMPLOYEE").rank(10).build();
@@ -88,16 +82,6 @@ class LeadEmailServiceTest {
         admin = Employee.builder().id(1L).name("Admin").role(adminRole).build();
         employeeA = Employee.builder().id(2L).name("Employee A").role(employeeRole).build();
         employeeB = Employee.builder().id(3L).name("Employee B").role(employeeRole).build();
-    }
-
-    // MimeMessageHelper needs a real MimeMessage (final class, not mockable
-    // in a useful way) - JavaMailSender itself stays mocked so no real SMTP
-    // connection is ever attempted. Only stubbed in tests that actually
-    // reach sendMail(...), not in setUp(), since Mockito's strict stubbing
-    // flags an unused stub as a failure.
-    private void stubMimeMessageCreation() {
-        when(mailSender.createMimeMessage())
-                .thenAnswer(inv -> new MimeMessage(jakarta.mail.Session.getInstance(new Properties())));
     }
 
     private void grant(Role role, String permissionCode, Scope scope) {
@@ -119,7 +103,6 @@ class LeadEmailServiceTest {
     @Test
     void sendIndividual_authorizedWithEmail_sendsAndLogsActivity() {
 
-        stubMimeMessageCreation();
         grant(employeeRole, EMAIL_SEND, Scope.OWN);
         when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
 
@@ -134,10 +117,48 @@ class LeadEmailServiceTest {
         assertThat(response.isSent()).isTrue();
         assertThat(response.getRecipient()).isEqualTo("rajesh@acme.com");
 
-        verify(mailSender).send(any(MimeMessage.class));
+        verify(brevoEmailClient).send(eq("rajesh@acme.com"), eq("Subject"), eq("Body"), any());
         verify(activityLogService).log(
                 eq(employeeA), eq(ActivityModule.LEAD), eq(ActivityAction.EMAIL_SENT),
                 eq(10L), eq("ABC Industries"), any());
+    }
+
+    // Multiple attachments: each selected Document's bytes (loaded through
+    // DocumentService, which delegates to DocumentStorageService - local
+    // disk or Supabase, this test doesn't care which) must reach
+    // BrevoEmailClient as an EmailAttachment carrying that Document's
+    // fileName and exact bytes, unmodified.
+    @SuppressWarnings("unchecked")
+    @Test
+    void sendIndividual_withAttachments_passesDocumentBytesToBrevoClient() {
+
+        grant(employeeRole, EMAIL_SEND, Scope.OWN);
+        when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
+
+        Lead lead = leadOwnedBy(13L, employeeA, "rajesh@acme.com");
+        when(leadRepository.findById(13L)).thenReturn(Optional.of(lead));
+
+        Document brochure = Document.builder().id(100L).fileName("brochure.pdf").build();
+        Document profile = Document.builder().id(101L).fileName("company-profile.pdf").build();
+        when(documentService.getById(100L)).thenReturn(brochure);
+        when(documentService.getById(101L)).thenReturn(profile);
+        when(documentService.loadBytes(brochure)).thenReturn("brochure-bytes".getBytes());
+        when(documentService.loadBytes(profile)).thenReturn("profile-bytes".getBytes());
+
+        SendLeadEmailRequest request = new SendLeadEmailRequest(
+                EmailTemplateType.PRODUCT_BROCHURE, null, "Subject", "Body", List.of(100L, 101L));
+
+        leadEmailService.sendIndividual(13L, request);
+
+        ArgumentCaptor<List<EmailAttachment>> captor = ArgumentCaptor.forClass(List.class);
+        verify(brevoEmailClient).send(eq("rajesh@acme.com"), eq("Subject"), eq("Body"), captor.capture());
+
+        List<EmailAttachment> attachments = captor.getValue();
+        assertThat(attachments).hasSize(2);
+        assertThat(attachments.get(0).filename()).isEqualTo("brochure.pdf");
+        assertThat(attachments.get(0).bytes()).isEqualTo("brochure-bytes".getBytes());
+        assertThat(attachments.get(1).filename()).isEqualTo("company-profile.pdf");
+        assertThat(attachments.get(1).bytes()).isEqualTo("profile-bytes".getBytes());
     }
 
     @Test
@@ -155,7 +176,7 @@ class LeadEmailServiceTest {
         assertThatThrownBy(() -> leadEmailService.sendIndividual(11L, request))
                 .isInstanceOf(IllegalArgumentException.class);
 
-        verify(mailSender, never()).send(any(MimeMessage.class));
+        verify(brevoEmailClient, never()).send(any(), any(), any(), any());
         verify(activityLogService, never()).log(any(), any(), any(), anyLong(), any(), any());
     }
 
@@ -174,7 +195,7 @@ class LeadEmailServiceTest {
         assertThatThrownBy(() -> leadEmailService.sendIndividual(12L, request))
                 .isInstanceOf(AccessDeniedException.class);
 
-        verify(mailSender, never()).send(any(MimeMessage.class));
+        verify(brevoEmailClient, never()).send(any(), any(), any(), any());
     }
 
     @Test
@@ -238,7 +259,6 @@ class LeadEmailServiceTest {
     @Test
     void sendBulkKeepInTouch_skipsIneligible_sendsToEligible_withPerLeadPlaceholders() {
 
-        stubMimeMessageCreation();
         grant(employeeRole, EMAIL_SEND, Scope.OWN);
         when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
 
@@ -264,7 +284,8 @@ class LeadEmailServiceTest {
         assertThat(result.getSkipReasons()).containsEntry(41L, "No email address");
         assertThat(result.getSkipReasons()).containsEntry(42L, "Not authorized");
 
-        verify(mailSender, org.mockito.Mockito.times(1)).send(any(MimeMessage.class));
+        verify(brevoEmailClient, org.mockito.Mockito.times(1))
+                .send(eq("eligible@acme.com"), any(), any(), any());
         verify(activityLogService, org.mockito.Mockito.times(1)).log(
                 eq(employeeA), eq(ActivityModule.LEAD), eq(ActivityAction.EMAIL_SENT),
                 eq(40L), any(), any());
@@ -273,7 +294,6 @@ class LeadEmailServiceTest {
     @Test
     void sendBulkKeepInTouch_mailSendFailure_skipsWithReason_continuesOtherRecipients() {
 
-        stubMimeMessageCreation();
         grant(employeeRole, EMAIL_SEND, Scope.OWN);
         when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
 
@@ -283,9 +303,9 @@ class LeadEmailServiceTest {
         when(leadRepository.findById(50L)).thenReturn(Optional.of(failing));
         when(leadRepository.findById(51L)).thenReturn(Optional.of(succeeding));
 
-        doThrow(new MailSendException("SMTP unavailable"))
+        doThrow(new IllegalStateException("Unable to send the email. Please try again."))
                 .doNothing()
-                .when(mailSender).send(any(MimeMessage.class));
+                .when(brevoEmailClient).send(any(), any(), any(), any());
 
         BulkKeepInTouchEmailRequest request = new BulkKeepInTouchEmailRequest(
                 List.of(50L, 51L), null, "Subject", "Body", List.of());

@@ -19,18 +19,10 @@ import com.compact.crm.exception.ResourceNotFoundException;
 import com.compact.crm.repository.LeadRepository;
 import com.compact.crm.security.AccessControlService;
 import com.compact.crm.security.CurrentUserService;
-import jakarta.mail.MessagingException;
-import jakarta.mail.internet.MimeMessage;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.ByteArrayResource;
-import org.springframework.mail.MailException;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
-import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -44,7 +36,7 @@ import static com.compact.crm.security.AccessControlService.EMAIL_SEND;
 
 // Orchestrates the Lead email feature end to end: authorization + lookup
 // (Lead, template, documents), placeholder substitution, actually sending
-// through JavaMailSender, and activity logging on success. Kept separate
+// through BrevoEmailClient, and activity logging on success. Kept separate
 // from LeadService so that file - already large, already well tested -
 // doesn't grow a second, unrelated responsibility; this class depends on
 // LeadRepository directly rather than routing through LeadService, the same
@@ -60,13 +52,7 @@ public class LeadEmailService {
     private final EmailTemplateService emailTemplateService;
     private final DocumentService documentService;
     private final ActivityLogService activityLogService;
-    private final JavaMailSender mailSender;
-
-    @Value("${crm.mail.from-address}")
-    private String fromAddress;
-
-    @Value("${crm.mail.from-name}")
-    private String fromName;
+    private final BrevoEmailClient brevoEmailClient;
 
     // Prefill for the composer: renders the chosen (or default, if
     // templateId is omitted) template's subject/body against this Lead's
@@ -343,34 +329,11 @@ public class LeadEmailService {
 
     private void sendMail(String to, String subject, String body, List<Document> attachments) {
 
-        try {
+        List<EmailAttachment> emailAttachments = attachments.stream()
+                .map(document -> new EmailAttachment(document.getFileName(), documentService.loadBytes(document)))
+                .toList();
 
-            MimeMessage message = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(message, !attachments.isEmpty(), "UTF-8");
-
-            helper.setFrom(fromAddress, fromName);
-            helper.setTo(to);
-            helper.setSubject(subject);
-            helper.setText(body, false);
-
-            for (Document document : attachments) {
-
-                byte[] bytes = documentService.loadBytes(document);
-
-                helper.addAttachment(
-                        document.getFileName(),
-                        new ByteArrayResource(bytes),
-                        document.getContentType()
-                );
-            }
-
-            mailSender.send(message);
-
-        } catch (MessagingException | UnsupportedEncodingException e) {
-            throw new IllegalStateException("Unable to compose the email.", e);
-        } catch (MailException e) {
-            throw new IllegalStateException("Unable to send the email. Please try again.", e);
-        }
+        brevoEmailClient.send(to, subject, body, emailAttachments);
     }
 
 }
