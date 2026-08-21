@@ -3,6 +3,7 @@ package com.compact.crm.config;
 import com.compact.crm.security.CustomUserDetailsService;
 import com.compact.crm.security.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -21,6 +22,7 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.util.Arrays;
 import java.util.List;
 
 @Configuration
@@ -30,6 +32,14 @@ public class SecurityConfig {
 
     private final CustomUserDetailsService customUserDetailsService;
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    // Comma-separated allowed frontend origins - see
+    // crm.cors.allowed-origins in application.properties. Env-var driven so
+    // the production frontend's real Render URL can be added/changed via
+    // Render's dashboard without a code change or redeploy; the inline
+    // default preserves exactly the origins already allowed today.
+    @Value("${crm.cors.allowed-origins}")
+    private String[] allowedOrigins;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
@@ -78,11 +88,7 @@ public class SecurityConfig {
 
         CorsConfiguration configuration = new CorsConfiguration();
 
-        configuration.setAllowedOrigins(List.of(
-                "http://localhost:5173",
-                "http://localhost:5174",
-                "https://crm-frontend-q5nk.onrender.com"
-        ));
+        configuration.setAllowedOrigins(Arrays.asList(allowedOrigins));
 
         configuration.setAllowedMethods(List.of(
                 "GET",

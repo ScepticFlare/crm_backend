@@ -32,5 +32,11 @@ public enum ActivityAction {
     ROLE_CHANGED,
     MANAGER_CHANGED,
     EMPLOYEE_ACTIVATED,
-    EMPLOYEE_DEACTIVATED
+    EMPLOYEE_DEACTIVATED,
+
+    // Lead email feature (Product Brochure / Keep in Touch, individual or
+    // bulk) - logged against ActivityModule.LEAD, disambiguated by the
+    // description text rather than a separate action per email type, same
+    // convention as COMPLETE vs UPDATE for FollowUp.
+    EMAIL_SENT
 }

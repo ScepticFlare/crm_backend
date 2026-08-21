@@ -155,6 +155,29 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(error, HttpStatus.UNAUTHORIZED);
     }
 
+    // Email compose/send failures (see service.LeadEmailService.sendMail) -
+    // a misconfigured or unreachable SMTP provider, or a malformed message.
+    // Mapped to 502 (this server, acting as a client to the mail provider,
+    // got a bad response) rather than falling through to the generic 500
+    // handler below, which would still work but loses the more specific
+    // status. The exception's own message is safe to surface here since
+    // LeadEmailService only ever sets a user-facing message on it, never the
+    // raw provider error.
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ApiError> handleIllegalStateException(IllegalStateException ex) {
+
+        ex.printStackTrace();
+
+        ApiError error = new ApiError(
+                LocalDateTime.now().toString(),
+                HttpStatus.BAD_GATEWAY.value(),
+                HttpStatus.BAD_GATEWAY.getReasonPhrase(),
+                ex.getMessage()
+        );
+
+        return new ResponseEntity<>(error, HttpStatus.BAD_GATEWAY);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiError> handleGeneralException(Exception ex) {
 

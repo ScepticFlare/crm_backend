@@ -4,6 +4,11 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 
+# Local document storage (see service.DocumentStorageService /
+# crm.documents.storage-path) - uploaded brochures/documents are local dev
+# artifacts, never committed.
+uploads/
+
 ### STS ###
 .apt_generated
 .classpath

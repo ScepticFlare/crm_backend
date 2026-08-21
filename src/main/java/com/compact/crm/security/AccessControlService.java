@@ -66,6 +66,17 @@ public class AccessControlService {
     public static final String CUSTOMER_EXPORT = "CUSTOMER_EXPORT";
     public static final String FOLLOWUP_EXPORT = "FOLLOWUP_EXPORT";
 
+    // Lead email feature (see V6 migration, service.LeadEmailService).
+    // EMAIL_SEND governs both the individual Send Email flow and being a
+    // valid recipient in a bulk Keep in Touch send - same ALL/TEAM/OWN
+    // shape as LEAD_MANAGE, so an employee can only email a Lead they're
+    // already authorized to manage. EMAIL_TEMPLATE_MANAGE/DOCUMENT_MANAGE
+    // govern the shared template/document library and are ADMIN-only (ALL
+    // scope), same shape as LEAD_DELETE/LEAD_EXPORT above.
+    public static final String EMAIL_SEND = "EMAIL_SEND";
+    public static final String EMAIL_TEMPLATE_MANAGE = "EMAIL_TEMPLATE_MANAGE";
+    public static final String DOCUMENT_MANAGE = "DOCUMENT_MANAGE";
+
     private static final String NOT_AUTHORIZED = "You are not authorized to access this record.";
     private static final String NO_PERMISSION = "You do not have permission to perform this action.";
 
