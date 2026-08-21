@@ -39,6 +39,10 @@ class BrevoEmailClientTest {
         return new BrevoEmailClient(builder, "sales@compact.example", "Compact Systems");
     }
 
+    private BrevoEmailClient clientWithAccountCheck(boolean checkAccountOnStartup) {
+        return new BrevoEmailClient(builder, "sales@compact.example", "Compact Systems", checkAccountOnStartup);
+    }
+
     @Test
     void send_postsToBrevoSmtpEmailEndpoint_withApiKeyAndSenderRecipientSubjectBody() {
 
@@ -145,6 +149,53 @@ class BrevoEmailClientTest {
                 .isEqualTo("xkeysib-abc123");
         assertThat(BrevoEmailClient.sanitizeApiKey(null))
                 .isEqualTo("");
+    }
+
+    // TEMPORARY - covers the GET /v3/account diagnostic added to isolate
+    // whether Brevo rejects the api-key itself vs only the /smtp/email
+    // request. Remove alongside the diagnostic once the investigation is
+    // done.
+
+    @Test
+    void accountCheck_disabled_makesNoRequest() {
+
+        init();
+
+        // No server.expect(...) registered at all - MockRestServiceServer
+        // fails the test immediately if any request is attempted, so this
+        // passing is itself proof the disabled flag suppresses the call.
+        clientWithAccountCheck(false).verifyApiKeyAgainstAccountEndpoint();
+    }
+
+    @Test
+    void accountCheck_enabled_keyValid_getsAccountEndpointWithSameApiKeyHeader_doesNotThrow() {
+
+        init();
+
+        server.expect(requestTo(BASE_URL + "/account"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header("api-key", "test-brevo-key"))
+                .andRespond(withSuccess("{\"email\":\"someone@example.com\"}", MediaType.APPLICATION_JSON));
+
+        clientWithAccountCheck(true).verifyApiKeyAgainstAccountEndpoint();
+
+        server.verify();
+    }
+
+    @Test
+    void accountCheck_enabled_keyRejected_logsFailure_doesNotThrow() {
+
+        init();
+
+        server.expect(requestTo(BASE_URL + "/account"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.UNAUTHORIZED).body("{\"message\":\"Key not found\"}"));
+
+        // Diagnostic-only: must never throw, even when Brevo rejects the key -
+        // it must not affect application startup or any caller.
+        clientWithAccountCheck(true).verifyApiKeyAgainstAccountEndpoint();
+
+        server.verify();
     }
 
 }
