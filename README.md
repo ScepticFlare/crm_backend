@@ -325,7 +325,7 @@ The React frontend for this backend is maintained in a separate repository:
 
 **Compact CRM Frontend**
 
-[Frontend Repository](YOUR_FRONTEND_REPOSITORY_URL)
+[Frontend Repository](https://github.com/ScepticFlare/crm)
 
 ## Project Status
 
