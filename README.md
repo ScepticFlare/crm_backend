@@ -4,37 +4,56 @@ Backend service for the Compact CRM application.
 
 Built with Java and Spring Boot, this backend provides REST APIs for authentication, authorization, lead management, opportunities, customers, follow-ups, employees, activity history, reporting, file handling, and email workflows.
 
-The backend is deployed on Render and is used by the React frontend of the CRM application. The CRM is actively used internally by 10+ employees at Compact Systems.
+The backend is deployed on Render and serves as the API and business-logic layer for the React frontend.
+
+The CRM is actively used internally by 10+ employees at Compact Systems.
 
 ## Overview
 
-The backend handles the application's core business logic, authentication and authorization, database operations, and integrations with external services.
+The backend handles the application's core business logic, authentication and authorization, database operations, and external service integrations.
 
 The main CRM workflow is:
 
-Lead → Opportunity → Customer
+**Lead → Opportunity → Customer**
 
-The backend enforces business rules around these workflows while providing filtered, paginated REST APIs for the frontend.
+The service layer manages these workflows and enforces the application's business rules.
 
 ## Architecture
 
-The application follows a layered Spring Boot architecture:
+The backend follows a layered Spring Boot architecture:
 
-Client / React Frontend
-        ↓
+```text
+React Frontend
+      |
+      | HTTP / REST
+      v
 REST Controllers
-        ↓
+      |
+      v
 Service Layer
-        ↓
+      |
+      v
 Repository Layer
-        ↓
-PostgreSQL Database
+      |
+      v
+PostgreSQL
+```
 
-Controllers handle HTTP requests and responses.
+### Controllers
 
-Services contain application and business logic.
+Handle HTTP requests, responses, request validation, and API routing.
 
-Repositories provide database access using Spring Data JPA and Hibernate.
+### Services
+
+Contain application logic and CRM business rules.
+
+### Repositories
+
+Provide database access using Spring Data JPA and Hibernate.
+
+### Security
+
+Spring Security handles authentication and authorization for protected API endpoints.
 
 ## Authentication & Authorization
 
@@ -42,6 +61,7 @@ Authentication is implemented using Spring Security and JSON Web Tokens (JWT).
 
 The authentication flow is:
 
+```text
 Login
   ↓
 Credentials validated
@@ -57,12 +77,13 @@ Security context populated
 Protected endpoint accessed
   ↓
 Authorization checks applied
+```
 
 The backend uses stateless authentication for protected REST endpoints.
 
 ### Roles
 
-The CRM supports three primary employee roles:
+The CRM supports three primary roles:
 
 - Admin
 - Manager
@@ -70,7 +91,7 @@ The CRM supports three primary employee roles:
 
 Authentication and authorization are handled separately.
 
-Authentication determines the identity of the user, while authorization determines which operations and resources that user can access.
+Authentication determines the identity of the user, while authorization determines which operations and resources the user can access.
 
 The application also supports scope-based access where applicable:
 
@@ -78,7 +99,7 @@ The application also supports scope-based access where applicable:
 - Team
 - All
 
-Access-control logic is centralized so that authorization rules can be applied consistently across CRM operations.
+Access-control logic is centralized so authorization rules can be applied consistently across CRM operations.
 
 ## CRM Modules
 
@@ -98,7 +119,7 @@ The backend supports:
 
 ### Opportunity Management
 
-The opportunity service supports:
+The backend supports:
 
 - Opportunity creation and updates
 - Opportunity stage management
@@ -107,7 +128,7 @@ The opportunity service supports:
 - Customer conversion
 - Business-rule validation
 
-The service layer also prevents invalid workflow transitions where required by the CRM's business rules.
+The service layer applies business rules around opportunity and customer workflows.
 
 ### Customer Management
 
@@ -121,11 +142,11 @@ Follow-up functionality allows employees to create, update, and track follow-up 
 
 Employee functionality includes employee records, roles, reporting relationships, and access control required by the CRM.
 
-### Activity History
+## Activity & Audit History
 
 The backend maintains activity records for important operations performed within the CRM.
 
-Activity records can include:
+Activity records can contain:
 
 - Employee who performed the action
 - Action performed
@@ -135,26 +156,26 @@ Activity records can include:
 - Description
 - Timestamp
 
-Activity history supports filtering, sorting, and server-side pagination.
+Activity history supports filtering, sorting, and server-side pagination so relevant records can be retrieved without loading the entire history at once.
 
 ## Pagination, Filtering & Search
 
-The backend provides server-side pagination for supported list and history endpoints.
+Supported list and history endpoints use server-side retrieval where applicable.
 
-Where applicable, APIs support:
+The APIs support features such as:
 
 - Pagination
 - Sorting
 - Filtering
 - Search
 
-This allows the frontend to retrieve only the required records instead of loading complete datasets into the browser.
+This allows the frontend to request only the records required for a particular view.
 
 ## Database
 
 The application uses PostgreSQL as its relational database.
 
-Persistence is handled through:
+Database persistence is handled through:
 
 - Spring Data JPA
 - Hibernate
@@ -177,7 +198,7 @@ The database models relationships between the main CRM entities, including:
 
 Supabase Storage is used for file storage associated with CRM functionality.
 
-The backend handles the required storage operations and provides the frontend with the appropriate access flow.
+The backend handles the relevant storage operations required by the application.
 
 ### Brevo
 
@@ -200,7 +221,7 @@ The backend exposes REST APIs for the major CRM modules, including:
 - File operations
 - Email operations
 
-The APIs support the application's authentication, authorization, business logic, filtering, sorting, and pagination requirements.
+The APIs support authentication, authorization, business logic, filtering, sorting, and pagination requirements used by the frontend.
 
 ## Project Structure
 
@@ -219,6 +240,95 @@ src/
 │   │       └── ...
 │   │
 │   └── resources/
-│       └── application.properties/
+│       └── application.properties
 │
 └── test/
+```
+
+## Technology Stack
+
+### Backend
+
+- Java
+- Spring Boot
+- Spring Security
+- Spring Data JPA
+- Hibernate
+- PostgreSQL
+- Maven
+
+### Security
+
+- JWT
+- Bearer Token Authentication
+- Role-Based Access Control
+- Scope-Based Authorization
+
+### Integrations
+
+- Supabase Storage
+- Brevo API
+
+### Deployment
+
+- Docker
+- Render
+
+## Local Development
+
+### Prerequisites
+
+- Java
+- Maven
+- PostgreSQL
+
+### Build
+
+```bash
+mvn clean install
+```
+
+### Run
+
+```bash
+mvn spring-boot:run
+```
+
+The application requires environment-specific configuration for PostgreSQL, JWT, Supabase, Brevo, and other required services.
+
+Sensitive credentials should be supplied through environment variables and should not be committed to the repository.
+
+## Docker
+
+The backend includes Docker configuration for containerized deployment.
+
+The deployed application follows this general architecture:
+
+```text
+React Frontend
+      |
+      | REST API
+      v
+Spring Boot Backend
+      |
+      v
+PostgreSQL
+```
+
+## Deployment
+
+The backend is deployed on Render and provides the REST API consumed by the separately deployed React frontend.
+
+## Frontend
+
+The React frontend for this backend is maintained in a separate repository:
+
+**Compact CRM Frontend**
+
+[Frontend Repository](YOUR_FRONTEND_REPOSITORY_URL)
+
+## Project Status
+
+This backend is part of an actively deployed internal CRM application used by 10+ employees at Compact Systems.
+
+The system continues to evolve as new business requirements and functionality are introduced.
