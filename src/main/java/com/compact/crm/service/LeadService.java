@@ -16,6 +16,7 @@ import com.compact.crm.entity.Opportunity;
 import com.compact.crm.entity.Product;
 import com.compact.crm.enums.ActivityAction;
 import com.compact.crm.enums.ActivityModule;
+import com.compact.crm.enums.LeadStatus;
 import com.compact.crm.enums.LeadValidity;
 import com.compact.crm.exception.ResourceNotFoundException;
 import com.compact.crm.repository.BatteryRepository;
@@ -44,7 +45,9 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 import static com.compact.crm.security.AccessControlService.LEAD_DELETE;
 import static com.compact.crm.security.AccessControlService.LEAD_EXPORT;
@@ -69,6 +72,18 @@ public class LeadService {
     // Safety cap on export size - a filtered/RBAC-scoped export is still
     // "all matching rows", which could otherwise be unbounded.
     private static final int EXPORT_MAX_ROWS = 20_000;
+
+    // Resolved/terminal Lead outcomes - drives closedAt (set on transition
+    // into this set, cleared on transition out of it). Same set
+    // OpportunityService.CLOSED_STAGE_NAMES and
+    // FullReportService.NON_IN_PROGRESS_STAGES use for the analogous
+    // Opportunity Sales Stage concept. INACTIVE is deliberately excluded -
+    // it's StaleLeadScheduler's automatic staleness bucket, not a decided
+    // business outcome.
+    private static final Set<LeadStatus> CLOSED_STATUSES = Set.of(
+            LeadStatus.WON, LeadStatus.LOST, LeadStatus.DROPPED,
+            LeadStatus.UNRESPONSIVE, LeadStatus.INVALID
+    );
 
     private final CurrentUserService currentUserService;
     private final AccessControlService accessControlService;
@@ -112,6 +127,8 @@ public class LeadService {
                 )
                 .description(request.getDescription())
                 .leadStatus(request.getLeadStatus())
+                .closedAt(request.getLeadStatus() != null && CLOSED_STATUSES.contains(request.getLeadStatus())
+                        ? LocalDateTime.now() : null)
                 .leadValidity(LeadValidity.VALID)
                 .leadSource(
                         leadSourceMasterRepository.findById(request.getLeadSourceId())
@@ -265,6 +282,9 @@ public class LeadService {
 
         Lead lead = getAuthorizedLead(id, LEAD_MANAGE);
 
+        LeadStatus previousStatus = lead.getLeadStatus();
+        String previousRemarks = lead.getFinalRemarks();
+
         lead.setCompanyName(request.getCompanyName());
         lead.setContactPerson(request.getContactPerson());
         lead.setDesignation(request.getDesignation());
@@ -284,6 +304,15 @@ public class LeadService {
 
         lead.setDescription(request.getDescription());
         lead.setLeadStatus(request.getLeadStatus());
+
+        boolean wasClosed = previousStatus != null && CLOSED_STATUSES.contains(previousStatus);
+        boolean isClosed = lead.getLeadStatus() != null && CLOSED_STATUSES.contains(lead.getLeadStatus());
+
+        if (isClosed && !wasClosed) {
+            lead.setClosedAt(LocalDateTime.now());
+        } else if (!isClosed && wasClosed) {
+            lead.setClosedAt(null);
+        }
 
         lead.setLeadSource(
                 leadSourceMasterRepository.findById(request.getLeadSourceId())
@@ -308,12 +337,30 @@ public class LeadService {
 
         Lead saved = leadRepository.save(lead);
 
+        // A plain "Updated lead" is uninformative when the status actually
+        // changed - previousStatus is already captured above for the
+        // closedAt transition, so reuse it here rather than adding a new
+        // ActivityAction just to say the same thing more specifically.
+        String updateDescription = !Objects.equals(previousStatus, saved.getLeadStatus())
+                ? "Status changed: " + previousStatus + " → " + saved.getLeadStatus()
+                : "Updated lead";
+
         activityLogService.log(
                 currentEmployee,
                 ActivityModule.LEAD, ActivityAction.UPDATE,
                 saved.getId(), saved.getCompanyName(),
-                "Updated lead"
+                updateDescription
         );
+
+        if (!Objects.equals(previousRemarks, saved.getFinalRemarks())) {
+
+            activityLogService.log(
+                    currentEmployee,
+                    ActivityModule.LEAD, ActivityAction.REMARKS_UPDATED,
+                    saved.getId(), saved.getCompanyName(),
+                    saved.getFinalRemarks()
+            );
+        }
 
         return saved;
     }

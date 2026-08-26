@@ -38,5 +38,12 @@ public enum ActivityAction {
     // bulk) - logged against ActivityModule.LEAD, disambiguated by the
     // description text rather than a separate action per email type, same
     // convention as COMPLETE vs UPDATE for FollowUp.
-    EMAIL_SENT
+    EMAIL_SENT,
+
+    // Lead.finalRemarks changed on an update - logged separately from the
+    // generic UPDATE above (with the new remarks text as the description)
+    // so a Lead's remarks history can be filtered/read back on its own,
+    // same "specific verb carries distinct business meaning" convention as
+    // ROLE_CHANGED/MANAGER_CHANGED for Employee.
+    REMARKS_UPDATED
 }

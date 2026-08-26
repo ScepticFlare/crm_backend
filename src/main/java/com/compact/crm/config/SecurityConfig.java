@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.AuthenticationProvider;
@@ -17,6 +18,7 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -67,6 +69,21 @@ public class SecurityConfig {
                         // (admin-only vs self-service) checks happen in
                         // EmployeeService via AccessControlService.
                         .anyRequest().authenticated()
+                )
+
+                .exceptionHandling(ex -> ex
+                        // A request with no token, or an expired / invalid /
+                        // malformed one, is stopped here before it reaches any
+                        // controller. Spring's default entry point for a
+                        // bearer-token setup answers 403, which the frontend
+                        // cannot tell apart from a genuine RBAC denial. Answer
+                        // 401 instead so "your session is gone, sign in again"
+                        // is distinct from "you're signed in but not allowed to
+                        // do this" - the latter stays 403 via the unchanged
+                        // AccessDeniedHandler / GlobalExceptionHandler.
+                        .authenticationEntryPoint(
+                                new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)
+                        )
                 )
 
                 .sessionManagement(session -> session

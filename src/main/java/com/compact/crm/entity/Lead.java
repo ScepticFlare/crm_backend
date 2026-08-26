@@ -80,6 +80,12 @@ public class Lead {
 
     private LocalDateTime updatedAt;
 
+    // Set when leadStatus transitions into a closed/resolved outcome
+    // (see LeadService.CLOSED_STATUSES), cleared back to null if the lead
+    // is later reopened - reflects the current closure only, not a
+    // first-ever-closed timestamp.
+    private LocalDateTime closedAt;
+
     @PrePersist
     protected void onCreate() {
 

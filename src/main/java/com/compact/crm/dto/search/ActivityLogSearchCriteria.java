@@ -21,6 +21,12 @@ public class ActivityLogSearchCriteria {
     private Long employeeId;
     private ActivityModule module;
     private ActivityAction action;
+    // Opposite of `action` above - excludes one action rather than
+    // matching it. Backs the Lead Details "Important Activity" view
+    // (excludeAction=VIEW), which hides repeated VIEW entries without
+    // ever deleting or skipping their recording - see LeadService.getLeadById.
+    private ActivityAction excludeAction;
+    private Long entityId;
     private LocalDate createdFrom;
     private LocalDate createdTo;
 }

@@ -31,6 +31,31 @@ public final class ActivityLogSpecifications {
         return (root, query, cb) -> cb.equal(root.get("action"), action);
     }
 
+    // Opposite of hasAction - excludes one action rather than matching it.
+    // Backs the Lead Details "Important Activity" view (excludeAction=VIEW):
+    // repeated VIEW entries are hidden from that default view without ever
+    // being deleted or skipped at write time.
+    public static Specification<ActivityLog> excludingAction(ActivityAction action) {
+
+        if (action == null) {
+            return null;
+        }
+
+        return (root, query, cb) -> cb.notEqual(root.get("action"), action);
+    }
+
+    // Backs "history for this one Lead/Opportunity/Customer/FollowUp"
+    // (e.g. GET /api/activity?module=LEAD&entityId=123) - entityId was
+    // already stored on every row, just never filterable until now.
+    public static Specification<ActivityLog> hasEntityId(Long entityId) {
+
+        if (entityId == null) {
+            return null;
+        }
+
+        return (root, query, cb) -> cb.equal(root.get("entityId"), entityId);
+    }
+
     public static Specification<ActivityLog> createdBetween(LocalDateTime from, LocalDateTime to) {
 
         if (from == null && to == null) {

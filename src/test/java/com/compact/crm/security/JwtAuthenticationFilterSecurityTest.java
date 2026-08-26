@@ -65,4 +65,26 @@ class JwtAuthenticationFilterSecurityTest {
                         .header("Authorization", "Bearer not-a-real-jwt"))
                 .andExpect(status().is4xxClientError());
     }
+
+    /**
+     * A request that never authenticated (no token, or an expired/invalid
+     * one) must come back as 401, not 403 - see
+     * SecurityConfig.exceptionHandling. 403 is reserved for a caller who IS
+     * authenticated but is denied by RBAC, so the frontend keys its
+     * "session expired, redirect to login" handling off 401 alone.
+     */
+    @Test
+    void noToken_onProtectedEndpoint_returns401_not403() throws Exception {
+
+        mockMvc.perform(get("/api/employees"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void invalidToken_onProtectedEndpoint_returns401_not403() throws Exception {
+
+        mockMvc.perform(get("/api/employees")
+                        .header("Authorization", "Bearer not-a-real-jwt"))
+                .andExpect(status().isUnauthorized());
+    }
 }

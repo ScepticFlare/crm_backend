@@ -66,7 +66,10 @@ public class ActivityLog {
     @Column(name = "entity_name")
     private String entityName;
 
-    @Column(length = 500)
+    // TEXT rather than a bounded VARCHAR - REMARKS_UPDATED entries (see
+    // LeadService.updateLead) copy Lead.finalRemarks here in full, and that
+    // source column is itself unbounded TEXT.
+    @Column(columnDefinition = "TEXT")
     private String description;
 
     @Column(name = "created_at", nullable = false)

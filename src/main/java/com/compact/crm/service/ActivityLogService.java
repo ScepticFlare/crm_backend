@@ -108,6 +108,8 @@ public class ActivityLogService {
                 scopedEmployeeIds != null ? ActivityLogSpecifications.actorIn(scopedEmployeeIds) : null,
                 ActivityLogSpecifications.hasModule(criteria.getModule()),
                 ActivityLogSpecifications.hasAction(criteria.getAction()),
+                ActivityLogSpecifications.excludingAction(criteria.getExcludeAction()),
+                ActivityLogSpecifications.hasEntityId(criteria.getEntityId()),
                 ActivityLogSpecifications.createdBetween(createdFrom, createdTo)
         ));
 
