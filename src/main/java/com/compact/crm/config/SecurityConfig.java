@@ -52,15 +52,21 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
 
                 .authorizeHttpRequests(auth -> auth
-                        // Only login is unauthenticated by nature (that's
-                        // how a token is obtained in the first place).
-                        // logout is intentionally NOT under this - it
-                        // records an activity entry for "the authenticated
-                        // caller", so it must require a valid token like
-                        // every other resource (see AuthController.logout /
+                        // Login is unauthenticated by nature (that's how a
+                        // token is obtained in the first place). logout is
+                        // intentionally NOT under this - it records an
+                        // activity entry for "the authenticated caller", so
+                        // it must require a valid token like every other
+                        // resource (see AuthController.logout /
                         // AuthService.recordLogout).
+                        //
+                        // /health is the Render cold-start liveness check
+                        // (HealthController) - it must stay reachable with
+                        // no token so the frontend can wake a sleeping
+                        // free-tier backend before the user submits login.
                         .requestMatchers(
-                                "/api/auth/login"
+                                "/api/auth/login",
+                                "/health"
                         ).permitAll()
 
                         // Employee-management endpoints previously allowed
