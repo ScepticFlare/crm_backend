@@ -69,6 +69,25 @@ public class SecurityConfig {
                                 "/health"
                         ).permitAll()
 
+                        // Public lead enquiry form (website "Request/Enquire"
+                        // button + brochure QR codes) - the only
+                        // unauthenticated write endpoint in the app. Every
+                        // internal/security-sensitive field on the Lead it
+                        // creates (status, assignee, source) is set
+                        // server-side in PublicLeadService, never trusted
+                        // from the request body. GET /industries, /products
+                        // and /batteries under the same prefix are read-only
+                        // passthroughs so the public form can populate its
+                        // dropdowns without a login.
+                        .requestMatchers(
+                                HttpMethod.POST, "/api/public/leads"
+                        ).permitAll()
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/public/industries", "/api/public/products", "/api/public/batteries"
+                        ).permitAll()
+
                         // Employee-management endpoints previously allowed
                         // unauthenticated access here; they now require a
                         // valid token like every other resource. Fine-grained

@@ -29,6 +29,18 @@ public class IndustryService {
         return repository.save(industry);
     }
 
+    // Idempotent seed helper - same "findOrCreate" convention as
+    // LeadSourceMasterService.findOrCreate/SalesStageService, used by
+    // config.PublicLeadIndustrySeeder to guarantee the "Other / Not Listed"
+    // row exists at boot without ever duplicating or erroring if it (or an
+    // admin-created row with the same name) already exists.
+    public Industry findOrCreate(String name) {
+
+        return repository.findByNameIgnoreCase(name)
+                .orElseGet(() -> repository.save(
+                        Industry.builder().name(name).build()));
+    }
+
     public List<Industry> getAll() {
         return repository.findByIsActiveTrue();
     }

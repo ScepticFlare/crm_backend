@@ -166,7 +166,7 @@ public class LeadController {
 
         List<String> headers = List.of(
                 "Company", "Contact Person", "Phone", "Email", "City", "State",
-                "Lead Status", "Lead Source", "Industry", "Assigned Employee", "Created Date"
+                "Lead Status", "Lead Source", "Campaign Code", "Industry", "Assigned Employee", "Created Date"
         );
 
         List<List<String>> rows = new ArrayList<>();
@@ -182,6 +182,7 @@ public class LeadController {
                     nullToEmpty(lead.getState()),
                     lead.getLeadStatus() != null ? lead.getLeadStatus().name() : "",
                     lead.getLeadSource() != null ? lead.getLeadSource().getName() : "",
+                    nullToEmpty(lead.getCampaignCode()),
                     lead.getIndustry() != null ? lead.getIndustry().getName() : "",
                     lead.getAssignedEmployee() != null ? lead.getAssignedEmployee().getName() : "",
                     lead.getCreatedAt() != null ? lead.getCreatedAt().toString() : ""

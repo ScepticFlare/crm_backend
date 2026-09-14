@@ -47,9 +47,26 @@ public class Lead {
 
     private String pincode;
 
+    // Raw campaign identifier from a public-lead-form submission's
+    // ?campaign= query param (e.g. "enterprise-brochure-2026") - see
+    // service.PublicLeadService. Null for every internally-created Lead.
+    // Deliberately NOT a foreign key / master-data table: a campaign code is
+    // free-form print-run metadata, not a CRM concept that needs its own
+    // admin-managed list the way Industry/Product/LeadSource do.
+    private String campaignCode;
+
     @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "industry_id")
     private Industry industry;
+
+    // Free-text industry/business type typed by a public-lead-form visitor
+    // who selected the "Other / Not Listed" Industry (see
+    // config.PublicLeadIndustrySeeder / service.PublicLeadService) - the
+    // Industry master is never auto-extended from public input, so this is
+    // where that detail is preserved instead of being lost. Null whenever
+    // industry is a normal (non-"Other") row, including every
+    // internally-created Lead.
+    private String otherIndustryDetail;
 
     @Column(columnDefinition = "TEXT")
     private String description;

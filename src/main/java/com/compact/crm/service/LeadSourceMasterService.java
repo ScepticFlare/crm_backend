@@ -29,6 +29,17 @@ public class LeadSourceMasterService {
         return repository.save(source);
     }
 
+    // Idempotent seed helper - same "findOrCreate" convention as
+    // SalesStageService, used by config.PublicLeadSourceSeeder to guarantee
+    // the "Website Form" / "Brochure QR" rows exist at boot without ever
+    // duplicating or erroring if an admin already created them by hand.
+    public LeadSourceMaster findOrCreate(String name) {
+
+        return repository.findByNameIgnoreCase(name)
+                .orElseGet(() -> repository.save(
+                        LeadSourceMaster.builder().name(name).build()));
+    }
+
     public List<LeadSourceMaster> getAll() {
         return repository.findByIsActiveTrue();
     }
