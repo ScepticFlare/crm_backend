@@ -2,7 +2,7 @@
 set -u
 
 HOST="aws-0-ap-southeast-1.pooler.supabase.com"
-PORT="5432"
+TARGET_PORT="5432"
 
 echo "=== DB CONNECTIVITY DIAGNOSTIC START ==="
 
@@ -19,8 +19,8 @@ else
 fi
 
 # 2. TCP
-echo "--- [2/4] TCP connectivity to $HOST:$PORT ---"
-if timeout 10 bash -c "exec 3<>/dev/tcp/$HOST/$PORT" 2>/tmp/tcp_err; then
+echo "--- [2/4] TCP connectivity to $HOST:$TARGET_PORT ---"
+if timeout 10 bash -c "exec 3<>/dev/tcp/$HOST/$TARGET_PORT" 2>/tmp/tcp_err; then
   echo "TCP: OK (connected)"
 else
   echo "TCP: FAIL"
@@ -30,8 +30,8 @@ else
 fi
 
 # 3. TLS handshake (raw Postgres SSLRequest + TLS upgrade - same sequence pgjdbc performs)
-echo "--- [3/4] TLS handshake (STARTTLS postgres) to $HOST:$PORT ---"
-TLS_OUT=$(echo | timeout 10 openssl s_client -connect "$HOST:$PORT" -starttls postgres 2>&1)
+echo "--- [3/4] TLS handshake (STARTTLS postgres) to $HOST:$TARGET_PORT ---"
+TLS_OUT=$(echo | timeout 10 openssl s_client -connect "$HOST:$TARGET_PORT" -starttls postgres 2>&1)
 if echo "$TLS_OUT" | grep -q "Verify return code"; then
   echo "TLS: OK (handshake completed)"
   echo "$TLS_OUT" | grep -E "subject=|issuer=|Verify return code|Protocol|Cipher"
@@ -45,7 +45,7 @@ fi
 # 4. PostgreSQL authentication (reuses existing Render env vars; password never printed)
 echo "--- [4/4] PostgreSQL authentication ---"
 if PGPASSWORD="${SPRING_DATASOURCE_PASSWORD:-}" PGSSLMODE=require \
-   psql -h "$HOST" -p "$PORT" -U "${SPRING_DATASOURCE_USERNAME:-}" -d "${SPRING_DATASOURCE_DATABASE:-postgres}" -c "SELECT 1;" \
+   psql -h "$HOST" -p "$TARGET_PORT" -U "${SPRING_DATASOURCE_USERNAME:-}" -d "${SPRING_DATASOURCE_DATABASE:-postgres}" -c "SELECT 1;" \
    >/tmp/psql_out 2>&1; then
   echo "AUTH: OK"
   echo "=== RESULT: SUCCESSFUL CONNECTION ==="
