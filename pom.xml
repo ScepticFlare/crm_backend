@@ -43,12 +43,13 @@
 			<artifactId>spring-boot-starter-web</artifactId>
 		</dependency>
 
-		<!-- PostgreSQL -->
+		<!-- PostgreSQL. Compile scope (not runtime) only because Tls12OnlySocketFactory
+		     (TEMPORARY diagnostic, see that class's javadoc) extends org.postgresql.ssl.WrappedFactory
+		     directly - revert to <scope>runtime</scope> when that class is removed. -->
 		<dependency>
 			<groupId>org.postgresql</groupId>
 			<artifactId>postgresql</artifactId>
 			<version>42.7.12</version>
-			<scope>runtime</scope>
 		</dependency>
 
 		<!-- Flyway (database migrations) -->
