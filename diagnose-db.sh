@@ -57,4 +57,51 @@ fi
 
 echo "=== DB CONNECTIVITY DIAGNOSTIC END ==="
 
+# --- Supabase DIRECT connection (informational only - does not gate startup,
+# does not affect which host the application connects to) ---
+DIRECT_HOST="db.nhoqidvsxpnfmcudefgb.supabase.co"
+
+echo "=== SUPABASE DIRECT CONNECTION DIAGNOSTIC START ==="
+
+# 1. DNS
+echo "--- [1/4] DNS resolution: $DIRECT_HOST ---"
+if DIRECT_RESOLVED=$(getent hosts "$DIRECT_HOST" 2>&1); then
+  echo "DIRECT DNS: OK"
+  echo "$DIRECT_RESOLVED"
+else
+  echo "DIRECT DNS: FAIL"
+  echo "$DIRECT_RESOLVED"
+fi
+
+# 2. IPv4
+echo "--- [2/4] IPv4 resolution: $DIRECT_HOST ---"
+if DIRECT_V4=$(getent ahostsv4 "$DIRECT_HOST" 2>&1); then
+  echo "DIRECT IPv4: OK"
+  echo "$DIRECT_V4"
+else
+  echo "DIRECT IPv4: FAIL"
+  echo "$DIRECT_V4"
+fi
+
+# 3. IPv6
+echo "--- [3/4] IPv6 resolution: $DIRECT_HOST ---"
+if DIRECT_V6=$(getent ahostsv6 "$DIRECT_HOST" 2>&1); then
+  echo "DIRECT IPv6: OK"
+  echo "$DIRECT_V6"
+else
+  echo "DIRECT IPv6: FAIL"
+  echo "$DIRECT_V6"
+fi
+
+# 4. TCP port 5432
+echo "--- [4/4] TCP connectivity to $DIRECT_HOST:$TARGET_PORT ---"
+if timeout 5 bash -c "</dev/tcp/$DIRECT_HOST/$TARGET_PORT" 2>/tmp/direct_tcp_err; then
+  echo "DIRECT TCP: OK"
+else
+  echo "DIRECT TCP: FAILED"
+  cat /tmp/direct_tcp_err
+fi
+
+echo "=== SUPABASE DIRECT CONNECTION DIAGNOSTIC END ==="
+
 exec java -jar app.jar
