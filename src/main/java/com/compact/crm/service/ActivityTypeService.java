@@ -5,6 +5,8 @@ import com.compact.crm.entity.ActivityType;
 import com.compact.crm.exception.ResourceNotFoundException;
 import com.compact.crm.repository.ActivityTypeRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -15,6 +17,7 @@ public class ActivityTypeService {
 
     private final ActivityTypeRepository repository;
 
+    @CacheEvict(cacheNames = "activityTypes", allEntries = true)
     public ActivityType create(ActivityTypeRequest request) {
 
         repository.findByNameIgnoreCase(request.getName())
@@ -29,6 +32,7 @@ public class ActivityTypeService {
         return repository.save(activity);
     }
 
+    @Cacheable(cacheNames = "activityTypes")
     public List<ActivityType> getAll() {
         return repository.findByIsActiveTrue();
     }
@@ -44,6 +48,7 @@ public class ActivityTypeService {
                         new ResourceNotFoundException("Activity not found"));
     }
 
+    @CacheEvict(cacheNames = "activityTypes", allEntries = true)
     public ActivityType update(Long id, ActivityTypeRequest request) {
 
         ActivityType activity = getById(id);
@@ -53,6 +58,7 @@ public class ActivityTypeService {
         return repository.save(activity);
     }
 
+    @CacheEvict(cacheNames = "activityTypes", allEntries = true)
     public void deactivate(Long id) {
 
         ActivityType activity = getById(id);
@@ -62,6 +68,7 @@ public class ActivityTypeService {
         repository.save(activity);
     }
 
+    @CacheEvict(cacheNames = "activityTypes", allEntries = true)
     public void activate(Long id) {
 
         ActivityType activity = getById(id);

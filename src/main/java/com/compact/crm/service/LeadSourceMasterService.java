@@ -5,6 +5,8 @@ import com.compact.crm.entity.LeadSourceMaster;
 import com.compact.crm.exception.ResourceNotFoundException;
 import com.compact.crm.repository.LeadSourceMasterRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -15,6 +17,7 @@ public class LeadSourceMasterService {
 
     private final LeadSourceMasterRepository repository;
 
+    @CacheEvict(cacheNames = "leadSources", allEntries = true)
     public LeadSourceMaster create(LeadSourceMasterRequest request) {
 
         repository.findByNameIgnoreCase(request.getName())
@@ -33,6 +36,7 @@ public class LeadSourceMasterService {
     // SalesStageService, used by config.PublicLeadSourceSeeder to guarantee
     // the "Website Form" / "Brochure QR" rows exist at boot without ever
     // duplicating or erroring if an admin already created them by hand.
+    @CacheEvict(cacheNames = "leadSources", allEntries = true)
     public LeadSourceMaster findOrCreate(String name) {
 
         return repository.findByNameIgnoreCase(name)
@@ -40,6 +44,7 @@ public class LeadSourceMasterService {
                         LeadSourceMaster.builder().name(name).build()));
     }
 
+    @Cacheable(cacheNames = "leadSources")
     public List<LeadSourceMaster> getAll() {
         return repository.findByIsActiveTrue();
     }
@@ -54,6 +59,7 @@ public class LeadSourceMasterService {
                         new ResourceNotFoundException("Lead source not found"));
     }
 
+    @CacheEvict(cacheNames = "leadSources", allEntries = true)
     public LeadSourceMaster update(Long id, LeadSourceMasterRequest request) {
 
         LeadSourceMaster source = getById(id);
@@ -63,6 +69,7 @@ public class LeadSourceMasterService {
         return repository.save(source);
     }
 
+    @CacheEvict(cacheNames = "leadSources", allEntries = true)
     public void deactivate(Long id) {
 
         LeadSourceMaster source = getById(id);
@@ -72,6 +79,7 @@ public class LeadSourceMasterService {
         repository.save(source);
     }
 
+    @CacheEvict(cacheNames = "leadSources", allEntries = true)
     public void activate(Long id) {
 
         LeadSourceMaster source = getById(id);

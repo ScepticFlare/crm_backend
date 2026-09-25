@@ -5,6 +5,7 @@ import com.compact.crm.entity.LeadBattery;
 import com.compact.crm.entity.LeadProduct;
 import com.compact.crm.enums.LeadStatus;
 import com.compact.crm.enums.LeadValidity;
+import jakarta.persistence.criteria.JoinType;
 import jakarta.persistence.criteria.Subquery;
 import org.springframework.data.jpa.domain.Specification;
 
@@ -179,5 +180,30 @@ public final class LeadSpecifications {
         }
 
         return (root, query, cb) -> root.get("id").in(ids);
+    }
+
+    // Every Lead returned to the frontend gets serialized whole (see
+    // controller.LeadController.getAllLeads), so Jackson always walks
+    // industry/leadSource/assignedEmployee. Left un-fetched, each of those
+    // three EAGER to-one associations is a separate SELECT per row when the
+    // list is loaded via a Criteria/Specification query (they only get
+    // folded into the main query automatically for a plain findById) - up
+    // to 150 extra queries for a 50-row page. Explicitly fetching them here
+    // folds all three into the single main query as LEFT JOINs instead.
+    // Skipped on the count query Spring Data also runs for pagination
+    // (fetches there would be pointless and some JPA providers reject them
+    // outright on a query with a non-entity result type).
+    public static Specification<Lead> fetchAssociations() {
+
+        return (root, query, cb) -> {
+
+            if (query.getResultType() != Long.class && query.getResultType() != long.class) {
+                root.fetch("industry", JoinType.LEFT);
+                root.fetch("leadSource", JoinType.LEFT);
+                root.fetch("assignedEmployee", JoinType.LEFT);
+            }
+
+            return cb.conjunction();
+        };
     }
 }

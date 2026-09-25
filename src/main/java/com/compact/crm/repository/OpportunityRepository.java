@@ -105,4 +105,19 @@ public interface OpportunityRepository extends JpaRepository<Opportunity, Long>,
             @Param("productId") Long productId,
             @Param("batteryId") Long batteryId
     );
+
+    // Backs the Dashboard's pipeline-by-stage breakdown (GET
+    // /api/dashboard/stats) - a GROUP BY COUNT instead of fetching every
+    // Opportunity row just to tally them client-side (see
+    // service.DashboardService).
+    @Query("SELECT o.salesStage.name, COUNT(o) FROM Opportunity o GROUP BY o.salesStage.name")
+    List<Object[]> countAllGroupedBySalesStage();
+
+    @Query("""
+        SELECT o.salesStage.name, COUNT(o)
+        FROM Opportunity o
+        WHERE o.lead.assignedEmployee.id IN :employeeIds
+        GROUP BY o.salesStage.name
+    """)
+    List<Object[]> countGroupedBySalesStageForEmployees(@Param("employeeIds") List<Long> employeeIds);
 }

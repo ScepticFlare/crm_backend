@@ -249,6 +249,7 @@ public class LeadService {
                 ? criteria.getCreatedTo().plusDays(1).atStartOfDay() : null;
 
         return SpecificationUtil.and(java.util.Arrays.asList(
+                LeadSpecifications.fetchAssociations(),
                 LeadSpecifications.ownerIn(employeeIds),
                 LeadSpecifications.search(criteria.getSearch()),
                 LeadSpecifications.hasStatus(criteria.getStatus()),

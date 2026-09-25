@@ -3,6 +3,8 @@ package com.compact.crm.specification;
 import com.compact.crm.entity.LeadProduct;
 import com.compact.crm.entity.Opportunity;
 import com.compact.crm.enums.LeadValidity;
+import jakarta.persistence.criteria.Fetch;
+import jakarta.persistence.criteria.JoinType;
 import jakarta.persistence.criteria.Subquery;
 import org.springframework.data.jpa.domain.Specification;
 
@@ -186,5 +188,31 @@ public final class OpportunitySpecifications {
         }
 
         return (root, query, cb) -> root.get("id").in(ids);
+    }
+
+    // Opportunity is returned to the frontend whole (controller.
+    // OpportunityController), and its lead - EAGER by default, same as
+    // salesStage - is serialized in full too (pages/Opportunities.jsx reads
+    // lead.companyName / lead.assignedEmployee.name). Left un-fetched, a
+    // Criteria/Specification list query hits the DB separately per row for
+    // salesStage, lead, lead.industry, lead.leadSource AND
+    // lead.assignedEmployee - up to 250 extra queries for a 50-row page.
+    // All single-valued (no cartesian row multiplication), so one LEFT JOIN
+    // chain is safe with pagination. Skipped on the count query, same as
+    // LeadSpecifications.fetchAssociations.
+    public static Specification<Opportunity> fetchAssociations() {
+
+        return (root, query, cb) -> {
+
+            if (query.getResultType() != Long.class && query.getResultType() != long.class) {
+                root.fetch("salesStage", JoinType.LEFT);
+                Fetch<Opportunity, ?> leadFetch = root.fetch("lead", JoinType.LEFT);
+                leadFetch.fetch("industry", JoinType.LEFT);
+                leadFetch.fetch("leadSource", JoinType.LEFT);
+                leadFetch.fetch("assignedEmployee", JoinType.LEFT);
+            }
+
+            return cb.conjunction();
+        };
     }
 }

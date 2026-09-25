@@ -1,10 +1,12 @@
 package com.compact.crm.repository;
 
+import com.compact.crm.dto.response.RecentLeadResponse;
 import com.compact.crm.entity.Employee;
 import com.compact.crm.entity.Lead;
 import com.compact.crm.enums.LeadStatus;
 import com.compact.crm.enums.LeadValidity;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
@@ -123,5 +125,26 @@ public interface LeadRepository extends JpaRepository<Lead, Long>, JpaSpecificat
             @Param("activeStatuses") List<LeadStatus> activeStatuses,
             @Param("cutoff") LocalDateTime cutoff
     );
+
+    // Backs the Dashboard's "Recent Leads" widget (see service.
+    // DashboardService) - a flat constructor projection, not the full Lead
+    // entity graph.
+    @Query("""
+        SELECT new com.compact.crm.dto.response.RecentLeadResponse(
+            l.id, l.companyName, l.contactPerson, l.leadStatus, l.createdAt)
+        FROM Lead l
+        ORDER BY l.createdAt DESC
+    """)
+    List<RecentLeadResponse> findRecent(Pageable pageable);
+
+    @Query("""
+        SELECT new com.compact.crm.dto.response.RecentLeadResponse(
+            l.id, l.companyName, l.contactPerson, l.leadStatus, l.createdAt)
+        FROM Lead l
+        WHERE l.assignedEmployee.id IN :employeeIds
+        ORDER BY l.createdAt DESC
+    """)
+    List<RecentLeadResponse> findRecentForEmployees(
+            @Param("employeeIds") List<Long> employeeIds, Pageable pageable);
 
 }

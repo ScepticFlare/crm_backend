@@ -170,7 +170,7 @@ class EmployeeServiceTest {
 
         grant(adminRole, EMPLOYEE_VIEW, Scope.ALL);
         when(currentUserService.getCurrentEmployee()).thenReturn(admin);
-        when(employeeRepository.findAll()).thenReturn(List.of(admin, plainEmployee));
+        when(employeeRepository.findAllWithRoleAndManager()).thenReturn(List.of(admin, plainEmployee));
 
         assertThat(employeeService.getAllEmployees()).containsExactly(admin, plainEmployee);
     }
@@ -185,7 +185,7 @@ class EmployeeServiceTest {
         grant(managerRole, EMPLOYEE_VIEW, Scope.TEAM);
         when(currentUserService.getCurrentEmployee()).thenReturn(managerA);
         when(employeeRepository.findByManagerId(managerA.getId())).thenReturn(List.of(reportOfA));
-        when(employeeRepository.findAllById(List.of(managerA.getId(), reportOfA.getId())))
+        when(employeeRepository.findAllWithRoleAndManagerByIdIn(List.of(managerA.getId(), reportOfA.getId())))
                 .thenReturn(List.of(managerA, reportOfA));
 
         List<Employee> team = employeeService.getAllEmployees();

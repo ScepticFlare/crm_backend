@@ -4,6 +4,7 @@ import com.compact.crm.entity.FollowUp;
 import com.compact.crm.entity.Lead;
 import com.compact.crm.entity.Opportunity;
 import com.compact.crm.enums.FollowUpStatus;
+import jakarta.persistence.criteria.Fetch;
 import jakarta.persistence.criteria.Join;
 import jakarta.persistence.criteria.JoinType;
 import org.springframework.data.jpa.domain.Specification;
@@ -145,5 +146,39 @@ public final class FollowUpSpecifications {
         }
 
         return (root, query, cb) -> root.get("id").in(ids);
+    }
+
+    // FollowUp is returned to the frontend whole (controller.
+    // FollowUpController) with FOUR EAGER-by-default to-one associations -
+    // lead, opportunity, employee, activityType - each pulling in its own
+    // sub-graph (opportunity drags its lead too). Left un-fetched, a
+    // Criteria/Specification list query hits the DB separately per row for
+    // every one of them. All single-valued, so one LEFT JOIN chain is safe
+    // with pagination; skipped on the count query, same as
+    // LeadSpecifications.fetchAssociations.
+    public static Specification<FollowUp> fetchAssociations() {
+
+        return (root, query, cb) -> {
+
+            if (query.getResultType() != Long.class && query.getResultType() != long.class) {
+
+                Fetch<FollowUp, ?> leadFetch = root.fetch("lead", JoinType.LEFT);
+                leadFetch.fetch("industry", JoinType.LEFT);
+                leadFetch.fetch("leadSource", JoinType.LEFT);
+                leadFetch.fetch("assignedEmployee", JoinType.LEFT);
+
+                Fetch<FollowUp, ?> oppFetch = root.fetch("opportunity", JoinType.LEFT);
+                oppFetch.fetch("salesStage", JoinType.LEFT);
+                Fetch<?, ?> oppLeadFetch = oppFetch.fetch("lead", JoinType.LEFT);
+                oppLeadFetch.fetch("industry", JoinType.LEFT);
+                oppLeadFetch.fetch("leadSource", JoinType.LEFT);
+                oppLeadFetch.fetch("assignedEmployee", JoinType.LEFT);
+
+                root.fetch("employee", JoinType.LEFT);
+                root.fetch("activityType", JoinType.LEFT);
+            }
+
+            return cb.conjunction();
+        };
     }
 }

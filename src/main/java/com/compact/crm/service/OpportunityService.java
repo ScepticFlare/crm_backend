@@ -237,6 +237,7 @@ public class OpportunityService {
                 ? criteria.getCreatedTo().plusDays(1).atStartOfDay() : null;
 
         return SpecificationUtil.and(java.util.Arrays.asList(
+                OpportunitySpecifications.fetchAssociations(),
                 OpportunitySpecifications.ownerIn(employeeIds),
                 OpportunitySpecifications.search(criteria.getSearch()),
                 OpportunitySpecifications.hasStageName(criteria.getStageName()),

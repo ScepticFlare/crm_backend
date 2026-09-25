@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import org.hibernate.annotations.BatchSize;
 
 // Employee is the target of a lazy, self-referential @ManyToOne (manager)
 // - see below. When an Employee is loaded as part of resolving *another*
@@ -22,7 +23,13 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 // ByteBuddyInterceptor). @JsonIgnoreProperties on the class is honored for
 // generated subclasses too, unlike a field-level @JsonIgnore, so this is
 // what actually closes the gap - see EmployeeSerializationTest.
+// @BatchSize: whenever a lazy Employee proxy needs initializing (most
+// commonly the self-referential `manager` below, reached via
+// getManagerName()/getManagerId() while serializing a Lead/Customer/
+// FollowUp's assignedEmployee), Hibernate batches up to 50 such proxies
+// into one "WHERE id IN (...)" query instead of one query per proxy.
 @JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
+@BatchSize(size = 50)
 @Entity
 @Table(name = "employees")
 @Getter

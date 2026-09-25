@@ -228,6 +228,7 @@ public class FollowUpService {
                 ? criteria.getScheduledTo().plusDays(1).atStartOfDay() : null;
 
         return SpecificationUtil.and(java.util.Arrays.asList(
+                FollowUpSpecifications.fetchAssociations(),
                 FollowUpSpecifications.ownerIn(employeeIds),
                 FollowUpSpecifications.search(criteria.getSearch()),
                 FollowUpSpecifications.hasStatus(criteria.getStatus()),

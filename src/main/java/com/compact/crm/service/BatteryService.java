@@ -5,6 +5,8 @@ import com.compact.crm.entity.Battery;
 import com.compact.crm.exception.ResourceNotFoundException;
 import com.compact.crm.repository.BatteryRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -15,6 +17,7 @@ public class BatteryService {
 
     private final BatteryRepository repository;
 
+    @CacheEvict(cacheNames = "batteries", allEntries = true)
     public Battery create(BatteryRequest request) {
 
         repository.findByNameIgnoreCase(request.getName())
@@ -30,6 +33,7 @@ public class BatteryService {
 
     }
 
+    @Cacheable(cacheNames = "batteries")
     public List<Battery> getAll() {
         return repository.findByIsActiveTrue();
     }
@@ -46,6 +50,7 @@ public class BatteryService {
 
     }
 
+    @CacheEvict(cacheNames = "batteries", allEntries = true)
     public Battery update(Long id, BatteryRequest request) {
 
         Battery battery = getById(id);
@@ -56,6 +61,7 @@ public class BatteryService {
 
     }
 
+    @CacheEvict(cacheNames = "batteries", allEntries = true)
     public void deactivate(Long id) {
 
         Battery battery = getById(id);
@@ -66,6 +72,7 @@ public class BatteryService {
 
     }
 
+    @CacheEvict(cacheNames = "batteries", allEntries = true)
     public void activate(Long id) {
 
         Battery battery = getById(id);

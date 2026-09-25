@@ -5,6 +5,8 @@ import com.compact.crm.entity.Product;
 import com.compact.crm.exception.ResourceNotFoundException;
 import com.compact.crm.repository.ProductRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -15,6 +17,7 @@ public class ProductService {
 
     private final ProductRepository repository;
 
+    @CacheEvict(cacheNames = "products", allEntries = true)
     public Product create(ProductRequest request) {
 
         repository.findByNameIgnoreCase(request.getName())
@@ -30,6 +33,11 @@ public class ProductService {
 
     }
 
+    // Cached: this list is fetched on nearly every Lead/Opportunity page
+    // load (see pages/Leads.jsx, AddLead.jsx, etc.) but changes only when
+    // an admin adds/edits/(de)activates a product - see the @CacheEvict
+    // methods below, which invalidate it on exactly those writes.
+    @Cacheable(cacheNames = "products")
     public List<Product> getAll() {
 
         return repository.findByIsActiveTrue();
@@ -50,6 +58,7 @@ public class ProductService {
 
     }
 
+    @CacheEvict(cacheNames = "products", allEntries = true)
     public Product update(Long id, ProductRequest request) {
 
         Product product = getById(id);
@@ -60,6 +69,7 @@ public class ProductService {
 
     }
 
+    @CacheEvict(cacheNames = "products", allEntries = true)
     public void deactivate(Long id) {
 
         Product product = getById(id);
@@ -70,6 +80,7 @@ public class ProductService {
 
     }
 
+    @CacheEvict(cacheNames = "products", allEntries = true)
     public void activate(Long id) {
 
         Product product = getById(id);

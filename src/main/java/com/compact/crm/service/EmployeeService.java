@@ -87,10 +87,10 @@ public class EmployeeService {
         List<Long> visibleIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, EMPLOYEE_VIEW);
 
         if (visibleIds == null) {
-            return employeeRepository.findAll();
+            return employeeRepository.findAllWithRoleAndManager();
         }
 
-        return employeeRepository.findAllById(visibleIds);
+        return employeeRepository.findAllWithRoleAndManagerByIdIn(visibleIds);
     }
 
     public Employee getEmployeeById(Long id) {

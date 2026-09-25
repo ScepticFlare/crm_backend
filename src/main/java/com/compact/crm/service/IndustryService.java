@@ -5,6 +5,8 @@ import com.compact.crm.entity.Industry;
 import com.compact.crm.exception.ResourceNotFoundException;
 import com.compact.crm.repository.IndustryRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -15,6 +17,7 @@ public class IndustryService {
 
     private final IndustryRepository repository;
 
+    @CacheEvict(cacheNames = "industries", allEntries = true)
     public Industry create(IndustryRequest request) {
 
         repository.findByNameIgnoreCase(request.getName())
@@ -34,6 +37,7 @@ public class IndustryService {
     // config.PublicLeadIndustrySeeder to guarantee the "Other / Not Listed"
     // row exists at boot without ever duplicating or erroring if it (or an
     // admin-created row with the same name) already exists.
+    @CacheEvict(cacheNames = "industries", allEntries = true)
     public Industry findOrCreate(String name) {
 
         return repository.findByNameIgnoreCase(name)
@@ -41,6 +45,7 @@ public class IndustryService {
                         Industry.builder().name(name).build()));
     }
 
+    @Cacheable(cacheNames = "industries")
     public List<Industry> getAll() {
         return repository.findByIsActiveTrue();
     }
@@ -56,6 +61,7 @@ public class IndustryService {
                         new ResourceNotFoundException("Industry not found"));
     }
 
+    @CacheEvict(cacheNames = "industries", allEntries = true)
     public Industry update(Long id, IndustryRequest request) {
 
         Industry industry = getById(id);
@@ -65,6 +71,7 @@ public class IndustryService {
         return repository.save(industry);
     }
 
+    @CacheEvict(cacheNames = "industries", allEntries = true)
     public void deactivate(Long id) {
 
         Industry industry = getById(id);
@@ -74,6 +81,7 @@ public class IndustryService {
         repository.save(industry);
     }
 
+    @CacheEvict(cacheNames = "industries", allEntries = true)
     public void activate(Long id) {
 
         Industry industry = getById(id);

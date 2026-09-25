@@ -5,6 +5,7 @@ import com.compact.crm.enums.LeadStatus;
 import com.compact.crm.enums.LeadValidity;
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.BatchSize;
 import com.compact.crm.entity.Industry;
 import com.compact.crm.entity.LeadSourceMaster;
 
@@ -85,12 +86,20 @@ public class Lead {
     @JoinColumn(name = "assigned_employee_id")
     private Employee assignedEmployee;
 
+    // @BatchSize: these are LAZY and get serialized to JSON on every lead
+    // list response (see pages/Leads.jsx). Without it, Hibernate issues one
+    // SELECT per lead per collection when Jackson walks the list (classic
+    // N+1 - up to 2 extra queries x every lead on the page). With it,
+    // Hibernate loads up to 50 leads' worth of rows for a given collection
+    // in a single "WHERE lead_id IN (...)" query instead.
     @OneToMany(mappedBy = "lead", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
+    @BatchSize(size = 50)
     private List<LeadBattery> leadBatteries = new ArrayList<>();
 
     @OneToMany(mappedBy = "lead", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
+    @BatchSize(size = 50)
     private List<LeadProduct> leadProducts = new ArrayList<>();
 
     private LocalDateTime createdAt;

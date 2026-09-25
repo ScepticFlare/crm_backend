@@ -25,4 +25,17 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long> {
     // the "manager" association).
     @Query("SELECT e FROM Employee e WHERE e.manager.id = :managerId")
     List<Employee> findByManagerId(@Param("managerId") Long managerId);
+
+    // Backs EmployeeService.getAllEmployees (the GET /api/employees list) -
+    // every Employee returned is serialized whole, including getRoleName()/
+    // getManagerName() (see entity.Employee), which otherwise lazily hit
+    // the DB once per employee for `manager` (role is EAGER but still one
+    // query per row without an explicit fetch here, since a plain findAll()
+    // doesn't join it). Fetching both up front turns that N+1 into a single
+    // query for the whole list.
+    @Query("SELECT DISTINCT e FROM Employee e LEFT JOIN FETCH e.role LEFT JOIN FETCH e.manager")
+    List<Employee> findAllWithRoleAndManager();
+
+    @Query("SELECT DISTINCT e FROM Employee e LEFT JOIN FETCH e.role LEFT JOIN FETCH e.manager WHERE e.id IN :ids")
+    List<Employee> findAllWithRoleAndManagerByIdIn(@Param("ids") List<Long> ids);
 }

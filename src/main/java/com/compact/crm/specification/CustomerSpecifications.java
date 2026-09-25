@@ -1,6 +1,8 @@
 package com.compact.crm.specification;
 
 import com.compact.crm.entity.Customer;
+import jakarta.persistence.criteria.Fetch;
+import jakarta.persistence.criteria.JoinType;
 import org.springframework.data.jpa.domain.Specification;
 
 import java.time.LocalDateTime;
@@ -104,5 +106,32 @@ public final class CustomerSpecifications {
         }
 
         return (root, query, cb) -> root.get("id").in(ids);
+    }
+
+    // Customer is returned to the frontend whole (controller.
+    // CustomerController), and Customer.opportunity - a @OneToOne, EAGER by
+    // default - drags in the *entire* Opportunity graph (salesStage, its
+    // lead, and that lead's industry/leadSource/assignedEmployee) even
+    // though pages/Customers.jsx only ever displays assignedEmployee.name.
+    // Left un-fetched, every one of those associations is a separate query
+    // per row. All single-valued, so one LEFT JOIN chain fetches the whole
+    // thing in the main query with no cartesian row multiplication; skipped
+    // on the count query, same as LeadSpecifications.fetchAssociations.
+    public static Specification<Customer> fetchAssociations() {
+
+        return (root, query, cb) -> {
+
+            if (query.getResultType() != Long.class && query.getResultType() != long.class) {
+                root.fetch("assignedEmployee", JoinType.LEFT);
+                Fetch<Customer, ?> oppFetch = root.fetch("opportunity", JoinType.LEFT);
+                oppFetch.fetch("salesStage", JoinType.LEFT);
+                Fetch<?, ?> leadFetch = oppFetch.fetch("lead", JoinType.LEFT);
+                leadFetch.fetch("industry", JoinType.LEFT);
+                leadFetch.fetch("leadSource", JoinType.LEFT);
+                leadFetch.fetch("assignedEmployee", JoinType.LEFT);
+            }
+
+            return cb.conjunction();
+        };
     }
 }

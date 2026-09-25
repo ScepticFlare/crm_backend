@@ -279,6 +279,7 @@ public class CustomerService {
                 ? criteria.getCreatedTo().plusDays(1).atStartOfDay() : null;
 
         return SpecificationUtil.and(java.util.Arrays.asList(
+                CustomerSpecifications.fetchAssociations(),
                 CustomerSpecifications.ownerIn(employeeIds),
                 CustomerSpecifications.search(criteria.getSearch()),
                 CustomerSpecifications.hasAssignedEmployeeId(criteria.getAssignedEmployeeId()),
