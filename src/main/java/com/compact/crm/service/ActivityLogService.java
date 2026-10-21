@@ -64,6 +64,44 @@ public class ActivityLogService {
             String entityName,
             String description) {
 
+        logEntry(actor, module, action, entityId, entityName, description, null, null, null);
+    }
+
+    // One UPDATE entry per changed business field, carrying the field name
+    // and its old/new value (null/blank old or new is stored as null) in
+    // addition to a readable description - so the existing history views
+    // still render it, and the structured columns are available for display.
+    // Callers invoke this only after the change has actually been saved.
+    public void logFieldChange(
+            Employee actor,
+            ActivityModule module,
+            Long entityId,
+            String entityName,
+            String fieldLabel,
+            String fieldName,
+            String oldValue,
+            String newValue) {
+
+        String description = fieldLabel + ": "
+                + (oldValue == null ? "(none)" : oldValue)
+                + " → "
+                + (newValue == null ? "(none)" : newValue);
+
+        logEntry(actor, module, ActivityAction.UPDATE, entityId, entityName,
+                description, fieldName, oldValue, newValue);
+    }
+
+    private void logEntry(
+            Employee actor,
+            ActivityModule module,
+            ActivityAction action,
+            Long entityId,
+            String entityName,
+            String description,
+            String fieldName,
+            String oldValue,
+            String newValue) {
+
         try {
 
             ActivityLog entry = ActivityLog.builder()
@@ -74,6 +112,9 @@ public class ActivityLogService {
                     .entityId(entityId)
                     .entityName(entityName)
                     .description(description)
+                    .fieldName(fieldName)
+                    .oldValue(oldValue)
+                    .newValue(newValue)
                     .createdAt(LocalDateTime.now())
                     .build();
 

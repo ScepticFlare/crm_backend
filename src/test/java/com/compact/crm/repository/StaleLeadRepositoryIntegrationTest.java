@@ -12,6 +12,7 @@ import com.compact.crm.entity.SalesStage;
 import com.compact.crm.enums.FollowUpStatus;
 import com.compact.crm.enums.LeadStatus;
 import com.compact.crm.enums.LeadValidity;
+import com.compact.crm.specification.LeadSpecifications;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,19 +25,15 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Real-database verification of LeadRepository.findStaleActiveLeads - the
- * query backing scheduler.StaleLeadScheduler's 6-month stale-lead ->
- * Inactive business rule. A Mockito-based scheduler test can only confirm
- * the loop wires status flips + logging correctly given a stubbed list;
- * only a real query against real rows (and real @PrePersist/@PreUpdate
- * timestamp behavior) can confirm which leads actually get selected.
+ * Real-database verification of LeadSpecifications.stale - the READ-ONLY
+ * stale-lead criteria (6 months with no edit / follow-up, no opportunity) that
+ * feeds the Inactive Leads page (the old scheduled job that wrote INACTIVE is
+ * gone). The criteria are unchanged from that job; only real rows and real
+ * @PrePersist/@PreUpdate timestamp behaviour can confirm which leads match.
  */
 @DataJpaTest
 class StaleLeadRepositoryIntegrationTest {
 
-    private static final List<LeadStatus> ACTIVE_STATUSES = List.of(
-            LeadStatus.NEW, LeadStatus.CONTACTED, LeadStatus.QUOTATION_SENT, LeadStatus.NEGOTIATION
-    );
 
     @Autowired private LeadRepository leadRepository;
     @Autowired private EmployeeRepository employeeRepository;
@@ -94,7 +91,7 @@ class StaleLeadRepositoryIntegrationTest {
         Lead lead = saveLead("Fresh Co", LeadStatus.NEW);
         backdateUpdatedAt(lead, LocalDateTime.now().minusMonths(1));
 
-        List<Lead> stale = leadRepository.findStaleActiveLeads(ACTIVE_STATUSES, LocalDateTime.now().minusMonths(6));
+        List<Lead> stale = leadRepository.findAll(LeadSpecifications.stale(LocalDateTime.now().minusMonths(6)));
 
         assertThat(stale).isEmpty();
     }
@@ -105,7 +102,7 @@ class StaleLeadRepositoryIntegrationTest {
         Lead lead = saveLead("Stale Co", LeadStatus.NEW);
         backdateUpdatedAt(lead, LocalDateTime.now().minusMonths(7));
 
-        List<Lead> stale = leadRepository.findStaleActiveLeads(ACTIVE_STATUSES, LocalDateTime.now().minusMonths(6));
+        List<Lead> stale = leadRepository.findAll(LeadSpecifications.stale(LocalDateTime.now().minusMonths(6)));
 
         assertThat(stale).extracting(Lead::getCompanyName).containsExactly("Stale Co");
     }
@@ -129,7 +126,7 @@ class StaleLeadRepositoryIntegrationTest {
                 .scheduledDate(LocalDateTime.now().minusDays(1))
                 .build());
 
-        List<Lead> stale = leadRepository.findStaleActiveLeads(ACTIVE_STATUSES, LocalDateTime.now().minusMonths(6));
+        List<Lead> stale = leadRepository.findAll(LeadSpecifications.stale(LocalDateTime.now().minusMonths(6)));
 
         assertThat(stale).isEmpty();
     }
@@ -143,7 +140,7 @@ class StaleLeadRepositoryIntegrationTest {
         Lead lead = saveLead("Already Invalid Co", LeadStatus.INVALID);
         backdateUpdatedAt(lead, LocalDateTime.now().minusMonths(12));
 
-        List<Lead> stale = leadRepository.findStaleActiveLeads(ACTIVE_STATUSES, LocalDateTime.now().minusMonths(6));
+        List<Lead> stale = leadRepository.findAll(LeadSpecifications.stale(LocalDateTime.now().minusMonths(6)));
 
         assertThat(stale).isEmpty();
     }
@@ -154,7 +151,7 @@ class StaleLeadRepositoryIntegrationTest {
         Lead lead = saveLead("Already Inactive Co", LeadStatus.INACTIVE);
         backdateUpdatedAt(lead, LocalDateTime.now().minusMonths(12));
 
-        List<Lead> stale = leadRepository.findStaleActiveLeads(ACTIVE_STATUSES, LocalDateTime.now().minusMonths(6));
+        List<Lead> stale = leadRepository.findAll(LeadSpecifications.stale(LocalDateTime.now().minusMonths(6)));
 
         assertThat(stale).isEmpty();
     }
@@ -168,7 +165,7 @@ class StaleLeadRepositoryIntegrationTest {
         Lead lost = saveLead("Old Lost Co", LeadStatus.LOST);
         backdateUpdatedAt(lost, LocalDateTime.now().minusMonths(12));
 
-        List<Lead> stale = leadRepository.findStaleActiveLeads(ACTIVE_STATUSES, LocalDateTime.now().minusMonths(6));
+        List<Lead> stale = leadRepository.findAll(LeadSpecifications.stale(LocalDateTime.now().minusMonths(6)));
 
         assertThat(stale).isEmpty();
     }
@@ -188,7 +185,7 @@ class StaleLeadRepositoryIntegrationTest {
                 .leadValidity(LeadValidity.VALID)
                 .build());
 
-        List<Lead> stale = leadRepository.findStaleActiveLeads(ACTIVE_STATUSES, LocalDateTime.now().minusMonths(6));
+        List<Lead> stale = leadRepository.findAll(LeadSpecifications.stale(LocalDateTime.now().minusMonths(6)));
 
         assertThat(stale).isEmpty();
     }

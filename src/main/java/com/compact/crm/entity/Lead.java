@@ -3,6 +3,8 @@ package com.compact.crm.entity;
 import com.compact.crm.enums.LeadSource;
 import com.compact.crm.enums.LeadStatus;
 import com.compact.crm.enums.LeadValidity;
+import com.compact.crm.service.LeadWorkflow;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.BatchSize;
@@ -105,6 +107,67 @@ public class Lead {
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
+
+    // Not persisted. Set by LeadService.getLeadById (the lead detail response):
+    // true once an Opportunity has been created from this Lead, so the UI
+    // can disable "Convert to Opportunity" instead of offering a repeat the
+    // backend would reject. Null when it was not computed (e.g. list rows).
+    @Transient
+    private Boolean converted;
+
+    // Not persisted. Set by LeadService when lead rows are returned: true
+    // for a NEW lead whose contact deadline has passed and that has no
+    // completed follow-up yet. Null when not computed.
+    @Transient
+    private Boolean contactOverdue;
+
+    // Not persisted. True when the lead already has a QUALIFYING follow-up
+    // (pending, now or later, with a described next action - service.
+    // FollowUpRules). Lets the conversion form know whether the new active
+    // opportunity still needs a next action entered. Null when not computed.
+    @Transient
+    private Boolean hasNextAction;
+
+    // Not persisted. True when the lead is STALE right now - open status, no
+    // edit or follow-up for 6+ months, no opportunity (see service.StaleLeadRules).
+    // Purely informational: it never changes the stored status and never
+    // affects conversion. Null when not computed.
+    @Transient
+    private Boolean stale;
+
+    // Why the lead was marked INVALID (free text; required when a lead
+    // becomes INVALID). Null for every historical INVALID lead - no reason
+    // is ever invented for them.
+    @Column(columnDefinition = "TEXT")
+    private String invalidReason;
+
+    // "Contact by" date: defaulted a couple of days after creation so no
+    // NEW lead is left without an owner-visible deadline. Null for
+    // historical leads (they are never flagged as overdue).
+    private java.time.LocalDate contactDeadline;
+
+    // ---- computed for the UI (never persisted) ----
+
+    // How the lead is displayed under the simplified NEW / VALID / INVALID
+    // model - see service.LeadWorkflow.effectiveStatus. The stored
+    // leadStatus is untouched.
+    @JsonProperty("effectiveLeadStatus")
+    public LeadStatus getEffectiveLeadStatus() {
+        return LeadWorkflow.effectiveStatus(leadStatus, Boolean.TRUE.equals(converted));
+    }
+
+    // The original value when it is one of the older opportunity-style
+    // statuses (CONTACTED, WON, DROPPED...), else null.
+    @JsonProperty("legacyStatus")
+    public LeadStatus getLegacyStatus() {
+        return LeadWorkflow.legacyStatus(leadStatus);
+    }
+
+    // Null when the lead can be converted, otherwise why not.
+    @JsonProperty("conversionBlockedReason")
+    public String getConversionBlockedReason() {
+        return LeadWorkflow.conversionBlockedReason(this, Boolean.TRUE.equals(converted));
+    }
 
     // Set when leadStatus transitions into a closed/resolved outcome
     // (see LeadService.CLOSED_STATUSES), cleared back to null if the lead

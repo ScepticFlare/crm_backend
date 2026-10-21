@@ -99,32 +99,6 @@ public interface LeadRepository extends JpaRepository<Lead, Long>, JpaSpecificat
             @Param("batteryId") Long batteryId
     );
 
-    // Backs scheduler.StaleLeadScheduler: candidates for automatic
-    // deactivation are leads still in an open/active status (not already
-    // INACTIVE or INVALID, and not a resolved outcome like WON/LOST/DROPPED/
-    // UNRESPONSIVE), not yet converted to an Opportunity (that pipeline
-    // governs its own follow-up from that point on), whose own last edit
-    // (updatedAt) predates the cutoff AND that have no FollowUp created or
-    // updated since the cutoff either - "touched" means a real edit to the
-    // Lead itself or genuine follow-up activity, never just being viewed
-    // (viewing never writes updatedAt or a FollowUp row).
-    @Query("""
-        SELECT l FROM Lead l
-        WHERE l.leadStatus IN :activeStatuses
-        AND l.updatedAt < :cutoff
-        AND NOT EXISTS (
-            SELECT 1 FROM FollowUp f
-            WHERE f.lead = l
-            AND (f.updatedAt >= :cutoff OR f.createdAt >= :cutoff)
-        )
-        AND NOT EXISTS (
-            SELECT 1 FROM Opportunity o WHERE o.lead = l
-        )
-    """)
-    List<Lead> findStaleActiveLeads(
-            @Param("activeStatuses") List<LeadStatus> activeStatuses,
-            @Param("cutoff") LocalDateTime cutoff
-    );
 
     // Backs the Dashboard's "Recent Leads" widget (see service.
     // DashboardService) - a flat constructor projection, not the full Lead

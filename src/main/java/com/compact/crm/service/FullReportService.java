@@ -178,8 +178,8 @@ public class FullReportService {
         long won = countByStage(opportunities, "WON");
         long lost = countByStage(opportunities, "LOST");
         long postponed = countByStage(opportunities, "POSTPONED");
-        long dropped = countByStage(opportunities, "DROPPED");
-        long unresponsive = countByStage(opportunities, "UNRESPONSIVE");
+        long dropped = countByStage(opportunities, "LEGACY_DROPPED");
+        long unresponsive = countByStage(opportunities, "LEGACY_UNRESPONSIVE");
         long inProgress = countInProgress(opportunities);
 
         Map<String, Long> productTotals = new LinkedHashMap<>();
@@ -213,25 +213,27 @@ public class FullReportService {
                 .build();
     }
 
-    private long countByStage(List<Opportunity> opportunities, String stageName) {
+    // Counts opportunities whose stage key (OpportunityWorkflow.key: the stable
+    // type name for a typed stage, else the upper-cased name) is any of `keys`.
+    private long countByStage(List<Opportunity> opportunities, String... keys) {
+
+        List<String> wanted = java.util.Arrays.asList(keys);
 
         return opportunities.stream()
                 .filter(o -> o.getSalesStage() != null
-                        && stageName.equalsIgnoreCase(o.getSalesStage().getName()))
+                        && wanted.contains(OpportunityWorkflow.key(o.getSalesStage())))
                 .count();
     }
 
-    // "In Progress" means the opportunity's stage isn't one of the other
+    // "In Progress" means the opportunity is still active (OpportunityWorkflow.isActive: by stage type, so a renamed core stage is handled correctly) - i.e. not one of the other
     // tracked outcomes - matches OpportunityRepository.searchInProgressOpportunities,
     // which the live In Progress list is built on.
-    private static final Set<String> NON_IN_PROGRESS_STAGES =
-            Set.of("WON", "LOST", "POSTPONED", "DROPPED", "UNRESPONSIVE", "INVALID");
 
     private long countInProgress(List<Opportunity> opportunities) {
 
         return opportunities.stream()
                 .filter(o -> o.getSalesStage() != null
-                        && !NON_IN_PROGRESS_STAGES.contains(o.getSalesStage().getName().toUpperCase()))
+                        && OpportunityWorkflow.isActive(o.getSalesStage()))
                 .count();
     }
 

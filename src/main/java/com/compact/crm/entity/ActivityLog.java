@@ -72,6 +72,19 @@ public class ActivityLog {
     @Column(columnDefinition = "TEXT")
     private String description;
 
+    // Field-level change detail (see ActivityLogService.logFieldChange):
+    // which business field changed and its previous/new value. All three
+    // are null for ordinary entries (and for every entry written before
+    // this existed), which still read from description alone.
+    @Column(name = "field_name", length = 100)
+    private String fieldName;
+
+    @Column(name = "old_value", columnDefinition = "TEXT")
+    private String oldValue;
+
+    @Column(name = "new_value", columnDefinition = "TEXT")
+    private String newValue;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 

@@ -46,6 +46,7 @@ class OpportunityServiceTest {
     @Mock private EmployeeRepository employeeRepository;
     @Mock private SalesStageService salesStageService;
     @Mock private ActivityLogService activityLogService;
+    @Mock private FollowUpService followUpService;
 
     private OpportunityService opportunityService;
 
@@ -75,7 +76,8 @@ class OpportunityServiceTest {
                 currentUserService,
                 accessControlService,
                 salesStageService,
-                activityLogService
+                activityLogService,
+                followUpService
         );
 
         adminRole = Role.builder().id(1L).name("ADMIN").rank(100).build();

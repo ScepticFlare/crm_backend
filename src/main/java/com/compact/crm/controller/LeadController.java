@@ -99,9 +99,10 @@ public class LeadController {
         return leadService.searchLeads(criteria, page, size, sortBy, sortDir);
     }
 
-    // Leads scheduler.StaleLeadScheduler automatically moved to INACTIVE
-    // after 6+ months of no meaningful activity - a separate bucket from
-    // /invalid (genuinely bad/unusable Leads, a manual business judgment).
+    // Inactive Leads page: leads whose STORED status is the historical INACTIVE
+    // plus leads that are merely stale (no edits or follow-ups for 6+ months,
+    // no opportunity), computed read-only - nothing is ever changed. Separate
+    // from /invalid (a manual business judgment). Thin wrapper over searchLeads.
     // Same thin-wrapper pattern as every other status bucket above.
     @GetMapping("/inactive")
     public Page<Lead> getInactiveLeads(
@@ -111,8 +112,19 @@ public class LeadController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        criteria.setStatus(LeadStatus.INACTIVE);
+        criteria.setInactiveView(true);
         return leadService.searchLeads(criteria, page, size, sortBy, sortDir);
+    }
+
+    // Possible-duplicate check used while entering a lead (warning only).
+    @GetMapping("/duplicates")
+    public com.compact.crm.dto.response.DuplicateLeadsResponse findPossibleDuplicates(
+            @RequestParam(required = false) String phone,
+            @RequestParam(required = false) String email,
+            @RequestParam(required = false) String company,
+            @RequestParam(required = false) Long excludeId
+    ) {
+        return leadService.findPossibleDuplicates(phone, email, company, excludeId);
     }
 
     @GetMapping("/{id}")

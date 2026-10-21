@@ -66,7 +66,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * mock that would break every other test in this class if shared here.
  */
 @DataJpaTest
-@Import({LeadService.class, OpportunityService.class, CustomerService.class, SalesStageService.class,
+@Import({LeadService.class, OpportunityService.class, FollowUpService.class, CustomerService.class, SalesStageService.class,
         ActivityLogService.class, AccessControlService.class, CurrentUserService.class})
 class LeadDeletionCascadeIntegrationTest {
 

@@ -4,6 +4,7 @@ import com.compact.crm.entity.*;
 import com.compact.crm.enums.ActivityAction;
 import com.compact.crm.enums.ActivityModule;
 import com.compact.crm.enums.LeadStatus;
+import com.compact.crm.util.BusinessClock;
 import com.compact.crm.enums.LeadValidity;
 import com.compact.crm.repository.*;
 import com.compact.crm.security.CurrentUserService;
@@ -136,7 +137,12 @@ public class LeadImportService {
                     lead.setCity(city);
 
                     lead.setDescription(remarks);
-                    lead.setFinalRemarks(finalRemarks);
+                    // The spreadsheet's status column mixes lead and opportunity
+                    // outcomes (won / lost / in progress / postponed). Under the
+                    // simplified lead statuses an imported lead is NEW, or INVALID when
+                    // the file marks it invalid; the original text is kept in the
+                    // remarks rather than lost.
+                    lead.setFinalRemarks(appendImportedStatus(finalRemarks, status));
 
                     lead.getLeadProducts().add(
                             LeadProduct.builder()
@@ -150,8 +156,16 @@ public class LeadImportService {
 
                     lead.setAssignedEmployee(assignedEmployee);
 
-                    lead.setLeadValidity(mapValidity(validity));
-                    lead.setLeadStatus(mapStatus(status));
+                    LeadValidity importedValidity = mapValidity(validity);
+
+                    lead.setLeadValidity(importedValidity);
+                    lead.setLeadStatus(importedValidity == LeadValidity.INVALID ? LeadStatus.INVALID : LeadStatus.NEW);
+
+                    if (importedValidity == LeadValidity.INVALID) {
+                        lead.setInvalidReason("Imported as invalid - no reason was given in the file");
+                    }
+
+                    lead.setContactDeadline(BusinessClock.today().plusDays(LeadWorkflow.DEFAULT_CONTACT_DEADLINE_DAYS));
 
                     if (createdAt != null) {
                         lead.setCreatedAt(createdAt);
@@ -181,31 +195,15 @@ public class LeadImportService {
             return e.getMessage();
         }
     }
-    private LeadStatus mapStatus(String status) {
+    private String appendImportedStatus(String finalRemarks, String status) {
 
-        if (status == null) {
-            return LeadStatus.NEW;
+        if (status == null || status.isBlank()) {
+            return finalRemarks;
         }
 
-        status = status.trim().toLowerCase();
+        String note = "[Imported status: " + status.trim() + "]";
 
-        switch (status) {
-
-            case "won":
-                return LeadStatus.WON;
-
-            case "lost":
-                return LeadStatus.LOST;
-
-            case "in progress":
-                return LeadStatus.CONTACTED;
-
-            case "postponed":
-                return LeadStatus.NEGOTIATION;
-
-            default:
-                return LeadStatus.NEW;
-        }
+        return (finalRemarks == null || finalRemarks.isBlank()) ? note : finalRemarks + "\n" + note;
     }
 
     private LeadValidity mapValidity(String validity) {

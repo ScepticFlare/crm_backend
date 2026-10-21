@@ -2,10 +2,13 @@ package com.compact.crm.controller;
 
 import com.compact.crm.dto.request.BulkIdsRequest;
 import com.compact.crm.dto.request.OpportunityRequest;
+import com.compact.crm.dto.request.ReturnToInProgressRequest;
 import com.compact.crm.dto.response.BulkOperationResult;
 import com.compact.crm.dto.response.DeleteImpactResponse;
+import com.compact.crm.dto.response.WorkflowAlertsResponse;
 import com.compact.crm.dto.search.OpportunitySearchCriteria;
 import com.compact.crm.entity.Opportunity;
+import com.compact.crm.enums.SalesStageType;
 import com.compact.crm.service.OpportunityService;
 import com.compact.crm.util.CsvWriter;
 import jakarta.validation.Valid;
@@ -68,7 +71,7 @@ public class OpportunityController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        criteria.setStageName("POSTPONED");
+        criteria.setStageType(SalesStageType.POSTPONED);
         return opportunityService.searchOpportunities(criteria, page, size, sortBy, sortDir);
     }
 
@@ -80,7 +83,7 @@ public class OpportunityController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        criteria.setStageName("DROPPED");
+        criteria.setStageType(SalesStageType.LEGACY_DROPPED);
         return opportunityService.searchOpportunities(criteria, page, size, sortBy, sortDir);
     }
 
@@ -92,7 +95,7 @@ public class OpportunityController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        criteria.setStageName("LOST");
+        criteria.setStageType(SalesStageType.LOST);
         return opportunityService.searchOpportunities(criteria, page, size, sortBy, sortDir);
     }
 
@@ -104,7 +107,7 @@ public class OpportunityController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        criteria.setStageName("UNRESPONSIVE");
+        criteria.setStageType(SalesStageType.LEGACY_UNRESPONSIVE);
         return opportunityService.searchOpportunities(criteria, page, size, sortBy, sortDir);
     }
 
@@ -116,8 +119,30 @@ public class OpportunityController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        criteria.setStageName("INVALID");
+        criteria.setStageType(SalesStageType.LEGACY_INVALID);
         return opportunityService.searchOpportunities(criteria, page, size, sortBy, sortDir);
+    }
+
+    // Non-blocking Dashboard reminders (expired closing dates, no upcoming
+    // follow-up, postponed review dates due). Read-only.
+    @GetMapping("/workflow-alerts")
+    public WorkflowAlertsResponse getWorkflowAlerts() {
+        return opportunityService.getWorkflowAlerts();
+    }
+
+    // "OK" on a postponed review-date reminder - does NOT change the stage.
+    @PostMapping("/{id}/postponed-reminder/acknowledge")
+    public Opportunity acknowledgePostponedReminder(@PathVariable Long id) {
+        return opportunityService.acknowledgePostponedReminder(id);
+    }
+
+    // Explicit, separate action: POSTPONED -> IN PROGRESS.
+    @PostMapping("/{id}/return-to-in-progress")
+    public Opportunity returnToInProgress(
+            @PathVariable Long id,
+            @RequestBody(required = false) ReturnToInProgressRequest request) {
+
+        return opportunityService.returnToInProgress(id, request);
     }
 
     @GetMapping("/{id}")

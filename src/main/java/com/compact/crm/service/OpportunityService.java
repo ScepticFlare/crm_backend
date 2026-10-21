@@ -1,8 +1,11 @@
 package com.compact.crm.service;
 
+import com.compact.crm.dto.request.FollowUpRequest;
 import com.compact.crm.dto.request.OpportunityRequest;
+import com.compact.crm.dto.request.ReturnToInProgressRequest;
 import com.compact.crm.dto.response.BulkOperationResult;
 import com.compact.crm.dto.response.DeleteImpactResponse;
+import com.compact.crm.dto.response.WorkflowAlertsResponse;
 import com.compact.crm.dto.search.OpportunitySearchCriteria;
 import com.compact.crm.entity.Customer;
 import com.compact.crm.entity.Employee;
@@ -12,6 +15,9 @@ import com.compact.crm.entity.Opportunity;
 import com.compact.crm.entity.SalesStage;
 import com.compact.crm.enums.ActivityAction;
 import com.compact.crm.enums.ActivityModule;
+import com.compact.crm.enums.FollowUpStatus;
+import com.compact.crm.enums.LeadValidity;
+import com.compact.crm.enums.SalesStageType;
 import com.compact.crm.exception.ResourceNotFoundException;
 import com.compact.crm.repository.CustomerRepository;
 import com.compact.crm.repository.FollowUpRepository;
@@ -21,8 +27,10 @@ import com.compact.crm.security.AccessControlService;
 import com.compact.crm.security.CurrentUserService;
 import com.compact.crm.specification.OpportunitySpecifications;
 import com.compact.crm.specification.SpecificationUtil;
+import com.compact.crm.util.BusinessClock;
 import com.compact.crm.util.SortWhitelist;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -31,7 +39,12 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Objects;
+import java.util.Set;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -55,8 +68,7 @@ public class OpportunityService {
     private final AccessControlService accessControlService;
     private final SalesStageService salesStageService;
     private final ActivityLogService activityLogService;
-
-    private static final String WON_STAGE_NAME = "WON";
+    private final FollowUpService followUpService;
 
     // Still enforced on UPDATE (see updateOpportunity) - editing a WON
     // opportunity's stage away from WON while a Customer conversion already
@@ -67,11 +79,6 @@ public class OpportunityService {
     private static final String WON_LOCK_MESSAGE =
             "This opportunity has already been converted to a customer and cannot be moved out of Won.";
 
-    // The "In Progress" bucket is everything not in one of these closed/
-    // terminal stages - same exclusion list the old searchInProgressOpportunities
-    // query used.
-    private static final List<String> CLOSED_STAGE_NAMES =
-            List.of("WON", "LOST", "POSTPONED", "DROPPED", "UNRESPONSIVE", "INVALID");
 
     private static final Map<String, String> SORT_FIELDS = Map.of(
             "title", "title",
@@ -84,9 +91,15 @@ public class OpportunityService {
 
     private static final int EXPORT_MAX_ROWS = 20_000;
 
+    // How many example opportunities each Dashboard reminder lists.
+    private static final int ALERT_SAMPLE_SIZE = 5;
+
     /**
-     * Convert a Lead into an Opportunity.
+     * Convert a Lead into an Opportunity. Transactional: the opportunity and
+     * the next-action follow-up supplied with it are saved together or not at
+     * all.
      */
+    @Transactional
     public Opportunity convertLeadToOpportunity(Long leadId, OpportunityRequest request) {
 
         Lead lead = leadRepository.findById(leadId)
@@ -100,26 +113,53 @@ public class OpportunityService {
                 lead.getAssignedEmployee().getId()
         );
 
-        // Prevent duplicate conversion
-        if (opportunityRepository.existsByLeadId(leadId)) {
-            throw new RuntimeException("This lead has already been converted into an Opportunity.");
+        // Only a lead whose status is VALID (qualified, a genuine prospect) can
+        // become an Opportunity, and only once. Checked on the stored lead -
+        // not just the form - so a direct API call cannot bypass it. The
+        // lead's legacy status values are untouched; see
+        // LeadWorkflow.conversionBlockedReason for the wording shown to users.
+        String blocked = LeadWorkflow.conversionBlockedReason(lead, opportunityRepository.existsByLeadId(leadId));
+
+        if (blocked != null) {
+            throw new IllegalArgumentException(blocked);
         }
 
-        SalesStage salesStage = salesStageService.getByName(request.getSalesStage());
+        // The conversion form used to let the user flip the lead's validity
+        // while converting; an invalid validity can never be the result.
+        if (request.getLeadValidity() != LeadValidity.VALID) {
+            throw new IllegalArgumentException(
+                    "Only VALID leads can be converted into an opportunity.");
+        }
+
+        SalesStage salesStage = resolveStage(request.getSalesStage());
 
         Opportunity opportunity = Opportunity.builder()
                 .title(request.getTitle())
                 .productValue(request.getProductValue())
-                .expectedClosingDate(request.getExpectedClosingDate())
-                .salesStage(salesStage)
                 .leadValidity(request.getLeadValidity())
                 .lead(lead)
                 .build();
 
-        lead.setLeadValidity(request.getLeadValidity());
-        leadRepository.save(lead);
+        applyWorkflowRules(opportunity, request, salesStage, true);
 
-        Opportunity saved = opportunityRepository.save(opportunity);
+        // An active opportunity needs a qualifying pending follow-up: one the
+        // lead already has, or the next action supplied with this request.
+        NextActionInput nextAction = requireNextAction(null, lead, salesStage, nextActionOf(request));
+
+        Opportunity saved;
+
+        try {
+
+            saved = opportunityRepository.save(opportunity);
+
+        } catch (DataIntegrityViolationException e) {
+
+            // Two conversions of the same lead raced past the check above and
+            // the database's one-opportunity-per-lead index rejected the second.
+            throw new IllegalArgumentException("This lead has already been converted into an Opportunity.");
+        }
+
+        createNextActionFollowUp(saved, nextAction);
 
         activityLogService.log(
                 currentEmployee,
@@ -128,7 +168,379 @@ public class OpportunityService {
                 "Converted lead to opportunity: " + saved.getTitle()
         );
 
+        // Start the Opportunity's own history (the entry above belongs to
+        // the Lead's history).
+        activityLogService.log(
+                currentEmployee,
+                ActivityModule.OPPORTUNITY, ActivityAction.CREATE,
+                saved.getId(), saved.getTitle(),
+                "Created opportunity from lead " + lead.getCompanyName()
+                        + " (stage: " + salesStage.getName()
+                        + ", expected closing date: " + saved.getExpectedClosingDate() + ")"
+        );
+
+        decorateNextAction(List.of(saved));
+
         return saved;
+    }
+
+    // The stage must already exist - only ADMIN creates stages (via
+    // SalesStageController), so an Opportunity save never creates one.
+    private SalesStage resolveStage(String name) {
+
+        try {
+            return salesStageService.getByName(name);
+        } catch (ResourceNotFoundException e) {
+            throw new IllegalArgumentException(
+                    "Sales stage \"" + name + "\" does not exist. Ask an Admin to add it first.");
+        }
+    }
+
+    private static String trimToNull(String value) {
+
+        if (value == null) {
+            return null;
+        }
+
+        String trimmed = value.trim();
+
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    // Validates the agreed workflow rules against the requested state and
+    // writes the stage-dependent fields onto `opportunity` (nothing is
+    // persisted here). Throws IllegalArgumentException (HTTP 400, message
+    // shown to the user) when a rule is broken. A missing follow-up is
+    // deliberately NOT a rule - it only produces a warning (noNextAction).
+    private void applyWorkflowRules(
+            Opportunity opportunity, OpportunityRequest request, SalesStage newStage, boolean converting) {
+
+        // Everything below keys off the stage's stable type, never its
+        // (renamable) display name.
+        SalesStage previous = opportunity.getSalesStage();
+        SalesStageType newType = newStage.getStageType();
+
+        boolean stageChanged = converting
+                || previous == null
+                || !Objects.equals(previous.getId(), newStage.getId());
+
+        // A deactivated stage keeps working for opportunities already in it,
+        // but cannot be newly selected.
+        if (stageChanged && Boolean.FALSE.equals(newStage.getIsActive())) {
+            throw new IllegalArgumentException(
+                    "Sales stage \"" + newStage.getName() + "\" is inactive and cannot be selected.");
+        }
+
+        // QUOTATION SENT / NEGOTIATION are sub-statuses of IN PROGRESS now.
+        // Historical Opportunities already in those stages keep them
+        // (stageChanged is false when they are re-saved as-is), but nobody
+        // can newly move an Opportunity into them.
+        if ((newType == SalesStageType.LEGACY_QUOTATION_SENT || newType == SalesStageType.LEGACY_NEGOTIATION)
+                && stageChanged) {
+            throw new IllegalArgumentException(
+                    "\"" + newStage.getName() + "\" is now a sub-status of In Progress. "
+                            + "Select the In Progress stage and choose it as the sub-status.");
+        }
+
+        // Expected closing date: always required to convert a lead, and for
+        // any active opportunity. WON/LOST/POSTPONED (and the other closed
+        // stages) may be saved without one, which also keeps historical
+        // records without a date editable.
+        LocalDate closingDate = request.getExpectedClosingDate();
+
+        if (closingDate == null && (converting || OpportunityWorkflow.isActive(newStage))) {
+            throw new IllegalArgumentException(converting
+                    ? "Expected closing date is required to convert a lead into an opportunity (an estimate is fine)."
+                    : "Expected closing date is required for an active opportunity (an estimate is fine).");
+        }
+
+        // A changed closing date on an active opportunity needs a reason, so
+        // repeated slippage is explained (and visible in the history). Not
+        // asked for the first date, for conversion, or for WON/LOST/POSTPONED.
+        LocalDate previousClosing = converting ? null : opportunity.getExpectedClosingDate();
+
+        if (previousClosing != null && closingDate != null && !previousClosing.equals(closingDate)
+                && OpportunityWorkflow.isActive(newStage)
+                && trimToNull(request.getClosingDateChangeReason()) == null) {
+            throw new IllegalArgumentException("Please enter the reason for changing the expected closing date.");
+        }
+
+        // Sub-status only exists under IN PROGRESS.
+        boolean inProgress = newType == SalesStageType.IN_PROGRESS;
+
+        if (request.getSubStatus() != null && !inProgress) {
+            throw new IllegalArgumentException(
+                    "Sub-status (Quotation Sent / Negotiation) can only be set when the stage is In Progress.");
+        }
+
+        // LOST needs a free-text reason when the opportunity becomes LOST.
+        // A historical LOST opportunity that never had one can still be
+        // re-saved without inventing a reason.
+        boolean lost = newType == SalesStageType.LOST;
+        String lostReason = trimToNull(request.getLostReason());
+
+        if (lost) {
+
+            boolean wasLost = !converting && OpportunityWorkflow.is(previous, SalesStageType.LOST);
+            boolean hadReason = trimToNull(opportunity.getLostReason()) != null;
+
+            if (lostReason == null && (!wasLost || hadReason)) {
+                throw new IllegalArgumentException("Please enter the reason this opportunity was lost.");
+            }
+        }
+
+        // POSTPONED: review date is optional. A new/changed review date
+        // re-arms the reminder (clears the acknowledgement).
+        boolean postponed = newType == SalesStageType.POSTPONED;
+        LocalDate reviewDate = postponed ? request.getPostponedReviewDate() : null;
+
+        boolean reviewDateChanged = !Objects.equals(reviewDate, opportunity.getPostponedReviewDate());
+
+        opportunity.setSalesStage(newStage);
+        opportunity.setExpectedClosingDate(closingDate);
+        opportunity.setSubStatus(inProgress ? request.getSubStatus() : null);
+        opportunity.setLostReason(lost ? lostReason : null);
+        opportunity.setPostponedReviewDate(reviewDate);
+        opportunity.setPostponedReason(postponed ? trimToNull(request.getPostponedReason()) : null);
+
+        if (!postponed || stageChanged || reviewDateChanged) {
+            opportunity.setPostponedReminderAcknowledgedFor(null);
+        }
+    }
+
+    // Value snapshot of the business fields the history tracks, taken
+    // before and after a change so only real differences are logged.
+    private record Tracked(
+            String title, String value, String validity, String stage, String subStatus,
+            String closingDate, String lostReason, String reviewDate, String ackFor, String postponedReason) {
+
+        static Tracked of(Opportunity o) {
+
+            return new Tracked(
+                    o.getTitle(),
+                    o.getProductValue() == null ? null
+                            : java.math.BigDecimal.valueOf(o.getProductValue()).stripTrailingZeros().toPlainString(),
+                    o.getLeadValidity() == null ? null : o.getLeadValidity().name(),
+                    o.getSalesStage() == null ? null : o.getSalesStage().getName(),
+                    o.getSubStatus() == null ? null : o.getSubStatus().name(),
+                    o.getExpectedClosingDate() == null ? null : o.getExpectedClosingDate().toString(),
+                    o.getLostReason(),
+                    o.getPostponedReviewDate() == null ? null : o.getPostponedReviewDate().toString(),
+                    o.getPostponedReminderAcknowledgedFor() == null ? null
+                            : o.getPostponedReminderAcknowledgedFor().toString(),
+                    o.getPostponedReason()
+            );
+        }
+    }
+
+    // Writes one history row per field that actually changed. Called only
+    // after the Opportunity was saved, so history never records a change
+    // that did not persist. Returns how many rows were written.
+    private int logChanges(Employee actor, Opportunity opportunity, Tracked before, Tracked after) {
+
+        int written = 0;
+
+        written += logChange(actor, opportunity, "Title", "title", before.title(), after.title());
+        written += logChange(actor, opportunity, "Value", "productValue", before.value(), after.value());
+        written += logChange(actor, opportunity, "Validity", "leadValidity", before.validity(), after.validity());
+        written += logChange(actor, opportunity, "Stage", "salesStage", before.stage(), after.stage());
+        written += logChange(actor, opportunity, "Sub-status", "subStatus", before.subStatus(), after.subStatus());
+        written += logChange(actor, opportunity, "Expected closing date", "expectedClosingDate",
+                before.closingDate(), after.closingDate());
+        written += logChange(actor, opportunity, "Lost reason", "lostReason", before.lostReason(), after.lostReason());
+        written += logChange(actor, opportunity, "Postponed review date", "postponedReviewDate",
+                before.reviewDate(), after.reviewDate());
+        written += logChange(actor, opportunity, "Postponed reason", "postponedReason",
+                before.postponedReason(), after.postponedReason());
+        written += logChange(actor, opportunity, "Postponed reminder acknowledged for review date",
+                "postponedReminderAcknowledgedFor", before.ackFor(), after.ackFor());
+
+        return written;
+    }
+
+    private int logChange(Employee actor, Opportunity opportunity, String label, String field,
+                          String oldValue, String newValue) {
+
+        if (Objects.equals(oldValue, newValue)) {
+            return 0;
+        }
+
+        activityLogService.logFieldChange(
+                actor, ActivityModule.OPPORTUNITY,
+                opportunity.getId(), opportunity.getTitle(),
+                label, field, oldValue, newValue
+        );
+
+        return 1;
+    }
+
+    // Marks the given opportunities for the response:
+    //  - hasNextAction: a QUALIFYING follow-up exists on the opportunity or its
+    //    originating lead (pending, scheduled now or later, with a described
+    //    next action - see FollowUpRules). Computed for every opportunity.
+    //  - noNextAction: the opportunity is ACTIVE and has none. This is the
+    //    state the save-time rule rejects and the UI explains.
+    // Two queries for the whole batch (no per-row lookups).
+    void decorateNextAction(Collection<Opportunity> opportunities) {
+
+        List<Opportunity> withIds = opportunities.stream().filter(o -> o.getId() != null).toList();
+
+        for (Opportunity o : opportunities) {
+            if (o.getId() == null) {
+                o.setHasNextAction(false);
+                o.setNoNextAction(false);
+            }
+        }
+
+        if (withIds.isEmpty()) {
+            return;
+        }
+
+        LocalDateTime now = BusinessClock.now();
+
+        List<Long> opportunityIds = withIds.stream().map(Opportunity::getId).toList();
+        List<Long> leadIds = withIds.stream()
+                .map(o -> o.getLead() == null ? null : o.getLead().getId())
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+
+        Set<Long> opportunitiesWithFollowUp =
+                qualifyingParentIds(followUpRepository.findPendingFutureByOpportunityIds(opportunityIds, now));
+
+        Set<Long> leadsWithFollowUp = leadIds.isEmpty() ? Set.of()
+                : qualifyingParentIds(followUpRepository.findPendingFutureByLeadIds(leadIds, now));
+
+        for (Opportunity o : withIds) {
+
+            boolean has = opportunitiesWithFollowUp.contains(o.getId())
+                    || (o.getLead() != null && leadsWithFollowUp.contains(o.getLead().getId()));
+
+            o.setHasNextAction(has);
+            o.setNoNextAction(OpportunityWorkflow.isActive(o) && !has);
+        }
+    }
+
+    // Ids (from [parent id, remarks] rows) whose follow-up has a described
+    // next action - the description part of FollowUpRules.
+    private static Set<Long> qualifyingParentIds(List<Object[]> rows) {
+
+        Set<Long> ids = new HashSet<>();
+
+        for (Object[] row : rows) {
+
+            if (FollowUpRules.hasDescription((String) row[1])) {
+                ids.add((Long) row[0]);
+            }
+        }
+
+        return ids;
+    }
+
+    // ---- mandatory next action for ACTIVE opportunities ----
+
+    // The next action a user supplies together with an opportunity save, so
+    // the follow-up and the opportunity are created in ONE transaction.
+    private record NextActionInput(String description, LocalDateTime scheduledFor, Long activityTypeId) {
+
+        boolean isEmpty() {
+            return (description == null || description.isBlank())
+                    && scheduledFor == null
+                    && activityTypeId == null;
+        }
+    }
+
+    private static NextActionInput nextActionOf(OpportunityRequest request) {
+
+        return request == null ? null : new NextActionInput(
+                request.getNextActionDescription(),
+                request.getNextFollowUpDate(),
+                request.getNextActionActivityTypeId());
+    }
+
+    private static NextActionInput nextActionOf(ReturnToInProgressRequest request) {
+
+        return request == null ? null : new NextActionInput(
+                request.getNextActionDescription(),
+                request.getNextFollowUpDate(),
+                request.getNextActionActivityTypeId());
+    }
+
+    // True when a QUALIFYING follow-up already exists on the opportunity (if it
+    // exists yet) or on its originating lead.
+    private boolean hasQualifyingFollowUp(Long opportunityId, Long leadId) {
+
+        LocalDateTime now = BusinessClock.now();
+
+        if (opportunityId != null && !qualifyingParentIds(
+                followUpRepository.findPendingFutureByOpportunityIds(List.of(opportunityId), now)).isEmpty()) {
+            return true;
+        }
+
+        return leadId != null && !qualifyingParentIds(
+                followUpRepository.findPendingFutureByLeadIds(List.of(leadId), now)).isEmpty();
+    }
+
+    // Enforces the rule: an opportunity that is (becoming) ACTIVE must have a
+    // qualifying pending follow-up - either one that already exists, or the
+    // next action supplied right now (returned so the caller creates it after
+    // saving the opportunity, in the same transaction). Nothing is invented:
+    // without one of the two the save is rejected with an actionable message.
+    // Not applied to WON / LOST / POSTPONED or the historical closed stages.
+    // Throws before anything is changed.
+    private NextActionInput requireNextAction(
+            Long opportunityId, Lead lead, SalesStage newStage, NextActionInput supplied) {
+
+        if (!OpportunityWorkflow.isActive(newStage)) {
+            return null;
+        }
+
+        NextActionInput input = supplied == null || supplied.isEmpty() ? null : supplied;
+
+        if (input != null) {
+
+            if (input.description() == null || !FollowUpRules.hasDescription(input.description())) {
+                throw new IllegalArgumentException(FollowUpRules.DESCRIPTION_REQUIRED_MESSAGE);
+            }
+
+            if (input.scheduledFor() == null || input.activityTypeId() == null) {
+                throw new IllegalArgumentException(
+                        "Please give the next action together with its follow-up date and activity type.");
+            }
+
+            if (input.scheduledFor().isBefore(BusinessClock.now())) {
+                throw new IllegalArgumentException("The follow-up date must be now or in the future.");
+            }
+
+            return input;
+        }
+
+        if (!hasQualifyingFollowUp(opportunityId, lead == null ? null : lead.getId())) {
+            throw new IllegalArgumentException(FollowUpRules.MISSING_MESSAGE);
+        }
+
+        return null;
+    }
+
+    // Creates the follow-up for the supplied next action through the existing
+    // FollowUp service (same permission check, history entry and model as a
+    // follow-up scheduled from the Follow Ups screen), owned by the
+    // opportunity's responsible employee. Runs inside the caller's transaction.
+    private void createNextActionFollowUp(Opportunity opportunity, NextActionInput input) {
+
+        if (input == null) {
+            return;
+        }
+
+        FollowUpRequest request = new FollowUpRequest();
+        request.setOpportunityId(opportunity.getId());
+        request.setEmployeeId(opportunity.getLead().getAssignedEmployee().getId());
+        request.setActivityTypeId(input.activityTypeId());
+        request.setStatus(FollowUpStatus.PENDING);
+        request.setScheduledDate(input.scheduledFor());
+        request.setRemarks(input.description().trim());
+
+        followUpService.createFollowUp(request);
     }
 
     // Reusable list query backing the main /api/opportunities endpoint and
@@ -144,7 +556,9 @@ public class OpportunityService {
         Specification<Opportunity> spec = buildSpecification(criteria, employeeIds);
         Sort sort = SortWhitelist.resolve(sortBy, sortDir, SORT_FIELDS, "createdDate");
 
-        return opportunityRepository.findAll(spec, PageRequest.of(page, size, sort));
+        Page<Opportunity> result = opportunityRepository.findAll(spec, PageRequest.of(page, size, sort));
+        decorateNextAction(result.getContent());
+        return result;
     }
 
     public Page<Opportunity> searchInProgressOpportunities(
@@ -155,12 +569,14 @@ public class OpportunityService {
 
         Specification<Opportunity> spec = SpecificationUtil.and(java.util.Arrays.asList(
                 buildSpecification(criteria, employeeIds),
-                OpportunitySpecifications.excludingStageNames(CLOSED_STAGE_NAMES)
+                OpportunitySpecifications.activeStage()
         ));
 
         Sort sort = SortWhitelist.resolve(sortBy, sortDir, SORT_FIELDS, "createdDate");
 
-        return opportunityRepository.findAll(spec, PageRequest.of(page, size, sort));
+        Page<Opportunity> result = opportunityRepository.findAll(spec, PageRequest.of(page, size, sort));
+        decorateNextAction(result.getContent());
+        return result;
     }
 
     public List<Opportunity> findForExport(
@@ -241,6 +657,7 @@ public class OpportunityService {
                 OpportunitySpecifications.ownerIn(employeeIds),
                 OpportunitySpecifications.search(criteria.getSearch()),
                 OpportunitySpecifications.hasStageName(criteria.getStageName()),
+                OpportunitySpecifications.hasStageType(criteria.getStageType()),
                 OpportunitySpecifications.hasSalesStageId(criteria.getSalesStageId()),
                 OpportunitySpecifications.hasAssignedEmployeeId(criteria.getAssignedEmployeeId()),
                 OpportunitySpecifications.hasIndustryId(criteria.getIndustryId()),
@@ -264,29 +681,48 @@ public class OpportunityService {
                 "Viewed opportunity"
         );
 
+        decorateNextAction(List.of(opportunity));
+
         return opportunity;
     }
 
+    // Transactional: validation failures roll everything back, and a next-action
+    // follow-up supplied with the edit is saved together with the opportunity.
+    @Transactional
     public Opportunity updateOpportunity(Long id, OpportunityRequest request) {
 
         Opportunity opportunity = getAuthorizedOpportunity(id, OPPORTUNITY_MANAGE);
 
-        boolean isCurrentlyWon =
-                WON_STAGE_NAME.equalsIgnoreCase(opportunity.getSalesStage().getName());
+        // Existing stage must be used as-is - an edit never creates a stage
+        // (stage configuration is Admin-only).
+        SalesStage salesStage = resolveStage(request.getSalesStage());
 
-        boolean isLeavingWon =
-                isCurrentlyWon && !WON_STAGE_NAME.equalsIgnoreCase(request.getSalesStage());
+        // A WON opportunity that already became a Customer cannot be moved
+        // out of WON (it would orphan the Customer link). Decided by stage
+        // type, so renaming WON neither weakens nor triggers this.
+        boolean isLeavingWon = OpportunityWorkflow.is(opportunity.getSalesStage(), SalesStageType.WON)
+                && salesStage.getStageType() != SalesStageType.WON;
 
         if (isLeavingWon && customerRepository.findByOpportunity(opportunity).isPresent()) {
             throw new IllegalArgumentException(WON_LOCK_MESSAGE);
         }
 
-        SalesStage salesStage = salesStageService.findOrCreate(request.getSalesStage());
+        // An opportunity that is (or is becoming) ACTIVE must have a qualifying
+        // pending follow-up - existing, or supplied with this edit. Checked
+        // before anything on the entity is touched. Not asked for WON / LOST /
+        // POSTPONED, so a legacy record lacking one can still be closed out,
+        // and the edit form can supply the missing one to fix it.
+        NextActionInput nextAction = requireNextAction(
+                opportunity.getId(), opportunity.getLead(), salesStage, nextActionOf(request));
+
+        Tracked before = Tracked.of(opportunity);
+
+        // Workflow rules validate first (and throw before anything on the
+        // entity is touched), then write the stage-dependent fields.
+        applyWorkflowRules(opportunity, request, salesStage, false);
 
         opportunity.setTitle(request.getTitle());
         opportunity.setProductValue(request.getProductValue());
-        opportunity.setExpectedClosingDate(request.getExpectedClosingDate());
-        opportunity.setSalesStage(salesStage);
         opportunity.setLeadValidity(request.getLeadValidity());
 
         opportunity.getLead().setLeadValidity(request.getLeadValidity());
@@ -294,14 +730,181 @@ public class OpportunityService {
 
         Opportunity saved = opportunityRepository.save(opportunity);
 
-        activityLogService.log(
-                currentUserService.getCurrentEmployee(),
-                ActivityModule.OPPORTUNITY, ActivityAction.UPDATE,
-                saved.getId(), saved.getTitle(),
-                "Updated opportunity"
-        );
+        createNextActionFollowUp(saved, nextAction);
+
+        Employee actor = currentUserService.getCurrentEmployee();
+
+        // Field-level history, written only now that the save succeeded.
+        // A save that changed nothing keeps the original generic entry.
+        int changes = logChanges(actor, saved, before, Tracked.of(saved));
+
+        // Why the closing date moved (required by applyWorkflowRules when an
+        // existing date of an active opportunity changes) - kept in the
+        // history next to the date change itself.
+        String dateReason = trimToNull(request.getClosingDateChangeReason());
+
+        if (dateReason != null
+                && before.closingDate() != null
+                && saved.getExpectedClosingDate() != null
+                && !before.closingDate().equals(saved.getExpectedClosingDate().toString())) {
+
+            changes += logChange(actor, saved, "Closing date change reason", "closingDateChangeReason",
+                    null, dateReason);
+        }
+
+        if (changes == 0) {
+
+            activityLogService.log(
+                    actor,
+                    ActivityModule.OPPORTUNITY, ActivityAction.UPDATE,
+                    saved.getId(), saved.getTitle(),
+                    "Updated opportunity"
+            );
+        }
+
+        decorateNextAction(List.of(saved));
 
         return saved;
+    }
+
+    // Explicit "OK" on a postponed review-date reminder. Records that the
+    // reminder for the current review date was seen; the stage is NOT
+    // touched - returning to IN PROGRESS is a separate, deliberate action
+    // (returnToInProgress).
+    public Opportunity acknowledgePostponedReminder(Long id) {
+
+        Opportunity opportunity = getAuthorizedOpportunity(id, OPPORTUNITY_MANAGE);
+
+        if (!OpportunityWorkflow.is(opportunity.getSalesStage(), SalesStageType.POSTPONED)
+                || opportunity.getPostponedReviewDate() == null) {
+            throw new IllegalArgumentException(
+                    "Only a postponed opportunity with a review date has a reminder to acknowledge.");
+        }
+
+        LocalDate reviewDate = opportunity.getPostponedReviewDate();
+        LocalDate previouslyAcknowledged = opportunity.getPostponedReminderAcknowledgedFor();
+
+        // Atomic: returns 0 when this date was already acknowledged (a repeat
+        // click, or a concurrent request that got there first) - in which
+        // case nothing changes and no second history entry is written.
+        int updated = opportunityRepository.acknowledgeReminder(id, reviewDate, LocalDateTime.now());
+
+        Opportunity saved = opportunityRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Opportunity not found"));
+
+        if (updated > 0) {
+
+            logChange(currentUserService.getCurrentEmployee(), saved,
+                    "Postponed reminder acknowledged for review date", "postponedReminderAcknowledgedFor",
+                    previouslyAcknowledged == null ? null : previouslyAcknowledged.toString(),
+                    reviewDate.toString());
+        }
+
+        decorateNextAction(List.of(saved));
+
+        return saved;
+    }
+
+    // Explicit "Return to In Progress" for a POSTPONED opportunity. The
+    // only way, besides a normal edit, that the stage moves on from
+    // POSTPONED; acknowledging a reminder never does this.
+    @Transactional
+    public Opportunity returnToInProgress(Long id, ReturnToInProgressRequest request) {
+
+        Opportunity opportunity = getAuthorizedOpportunity(id, OPPORTUNITY_MANAGE);
+
+        if (!OpportunityWorkflow.is(opportunity.getSalesStage(), SalesStageType.POSTPONED)) {
+            throw new IllegalArgumentException("Only a postponed opportunity can be returned to In Progress.");
+        }
+
+        LocalDate closingDate = request != null && request.getExpectedClosingDate() != null
+                ? request.getExpectedClosingDate()
+                : opportunity.getExpectedClosingDate();
+
+        if (closingDate == null) {
+            throw new IllegalArgumentException(
+                    "Expected closing date is required for an active opportunity (an estimate is fine).");
+        }
+
+        SalesStage inProgress = salesStageService.getByType(SalesStageType.IN_PROGRESS);
+
+        // Resuming makes it ACTIVE again, so it needs a qualifying pending
+        // follow-up: one that already exists, or the next action supplied here.
+        NextActionInput nextAction = requireNextAction(
+                opportunity.getId(), opportunity.getLead(), inProgress, nextActionOf(request));
+
+        Tracked before = Tracked.of(opportunity);
+
+        opportunity.setSalesStage(inProgress);
+        opportunity.setSubStatus(null);
+        opportunity.setExpectedClosingDate(closingDate);
+        opportunity.setPostponedReviewDate(null);
+        opportunity.setPostponedReason(null);
+        opportunity.setPostponedReminderAcknowledgedFor(null);
+
+        Opportunity saved = opportunityRepository.save(opportunity);
+
+        createNextActionFollowUp(saved, nextAction);
+
+        logChanges(currentUserService.getCurrentEmployee(), saved, before, Tracked.of(saved));
+
+        decorateNextAction(List.of(saved));
+
+        return saved;
+    }
+
+    // Non-blocking dashboard reminders over the Opportunities the caller can
+    // view: expired closing dates, active opportunities with no upcoming
+    // follow-up, and postponed opportunities whose review date has arrived.
+    // Read-only - nothing here changes any Opportunity.
+    public WorkflowAlertsResponse getWorkflowAlerts() {
+
+        Employee currentEmployee = currentUserService.getCurrentEmployee();
+        List<Long> employeeIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, OPPORTUNITY_VIEW);
+
+        LocalDate today = BusinessClock.today();
+        LocalDateTime now = BusinessClock.now();
+
+        Specification<Opportunity> owner = OpportunitySpecifications.ownerIn(employeeIds);
+
+        Specification<Opportunity> expired = SpecificationUtil.and(java.util.Arrays.asList(
+                owner, OpportunitySpecifications.closingDateExpired(today)));
+
+        Specification<Opportunity> noNextAction = SpecificationUtil.and(java.util.Arrays.asList(
+                owner, OpportunitySpecifications.activeStage(),
+                OpportunitySpecifications.noQualifyingFollowUp(now)));
+
+        Specification<Opportunity> postponedDue = SpecificationUtil.and(java.util.Arrays.asList(
+                owner, OpportunitySpecifications.postponedReminderDue(today)));
+
+        long expiredCount = opportunityRepository.count(expired);
+        long noNextActionCount = opportunityRepository.count(noNextAction);
+        long postponedCount = opportunityRepository.count(postponedDue);
+
+        return new WorkflowAlertsResponse(
+                expiredCount,
+                alertItems(expired, "expectedClosingDate"),
+                noNextActionCount,
+                alertItems(noNextAction, "expectedClosingDate"),
+                postponedCount,
+                alertItems(postponedDue, "postponedReviewDate")
+        );
+    }
+
+    private List<WorkflowAlertsResponse.Item> alertItems(Specification<Opportunity> spec, String sortField) {
+
+        return opportunityRepository
+                .findAll(spec, PageRequest.of(0, ALERT_SAMPLE_SIZE, Sort.by(Sort.Direction.ASC, sortField)))
+                .getContent()
+                .stream()
+                .map(o -> new WorkflowAlertsResponse.Item(
+                        o.getId(),
+                        o.getTitle(),
+                        o.getLead() == null ? null : o.getLead().getCompanyName(),
+                        o.getSalesStage() == null ? null : o.getSalesStage().getName(),
+                        o.getExpectedClosingDate(),
+                        o.getPostponedReviewDate()))
+                .toList();
     }
 
     @Transactional

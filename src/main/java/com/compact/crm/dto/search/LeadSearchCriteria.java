@@ -16,6 +16,12 @@ public class LeadSearchCriteria {
 
     private String search;
     private LeadStatus status;
+    // NEW / VALID / INVALID as the lead is DISPLAYED (legacy statuses mapped by
+    // service.LeadWorkflow.effectiveStatus). `status` above filters the stored value.
+    private LeadStatus statusGroup;
+    // Backs the Inactive Leads page: stored INACTIVE status OR currently stale
+    // (computed read-only - see service.StaleLeadRules). Set by the endpoint.
+    private Boolean inactiveView;
     private Long leadSourceId;
     private Long industryId;
     private Long productId;

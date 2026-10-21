@@ -5,6 +5,7 @@ import com.compact.crm.dto.request.LeadProductRequest;
 import com.compact.crm.dto.request.LeadRequest;
 import com.compact.crm.dto.response.BulkOperationResult;
 import com.compact.crm.dto.response.DeleteImpactResponse;
+import com.compact.crm.dto.response.DuplicateLeadsResponse;
 import com.compact.crm.dto.search.LeadSearchCriteria;
 import com.compact.crm.entity.Battery;
 import com.compact.crm.entity.Employee;
@@ -41,7 +42,11 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import com.compact.crm.util.BusinessClock;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -78,8 +83,7 @@ public class LeadService {
     // OpportunityService.CLOSED_STAGE_NAMES and
     // FullReportService.NON_IN_PROGRESS_STAGES use for the analogous
     // Opportunity Sales Stage concept. INACTIVE is deliberately excluded -
-    // it's StaleLeadScheduler's automatic staleness bucket, not a decided
-    // business outcome.
+    // it is a historical staleness value, not a decided business outcome.
     private static final Set<LeadStatus> CLOSED_STATUSES = Set.of(
             LeadStatus.WON, LeadStatus.LOST, LeadStatus.DROPPED,
             LeadStatus.UNRESPONSIVE, LeadStatus.INVALID
@@ -105,10 +109,21 @@ public class LeadService {
     private final FollowUpRepository followUpRepository;
     private final OpportunityService opportunityService;
 
+    // Months of inactivity after which an open, unconverted lead is shown as
+    // stale (read-only flag; see StaleLeadRules). Defaults to 6.
+    @org.springframework.beans.factory.annotation.Value("${crm.lead.stale-after-months:6}")
+    private int staleAfterMonths;
+
     public Lead createLead(LeadRequest request) {
 
         Employee employee = employeeRepository.findById(request.getAssignedEmployeeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found"));
+
+        // Validated before anything is built: a lead is created as NEW, VALID
+        // or INVALID (never one of the older legacy statuses), and an INVALID
+        // lead needs a reason.
+        String invalidReason = validateStatusAndReason(
+                request.getLeadStatus(), null, null, request.getInvalidReason());
 
         Lead lead = Lead.builder()
                 .companyName(request.getCompanyName())
@@ -127,9 +142,13 @@ public class LeadService {
                 )
                 .description(request.getDescription())
                 .leadStatus(request.getLeadStatus())
+                .invalidReason(invalidReason)
+                .contactDeadline(request.getContactDeadline() != null
+                        ? request.getContactDeadline()
+                        : BusinessClock.today().plusDays(LeadWorkflow.DEFAULT_CONTACT_DEADLINE_DAYS))
                 .closedAt(request.getLeadStatus() != null && CLOSED_STATUSES.contains(request.getLeadStatus())
                         ? LocalDateTime.now() : null)
-                .leadValidity(LeadValidity.VALID)
+                .leadValidity(validityFor(request.getLeadStatus(), null))
                 .leadSource(
                         leadSourceMasterRepository.findById(request.getLeadSourceId())
                                 .orElseThrow(() -> new ResourceNotFoundException("Lead Source not found"))
@@ -150,7 +169,125 @@ public class LeadService {
                 "Created lead"
         );
 
+        decorateLeads(List.of(saved));
+
         return saved;
+    }
+
+    private static String trimToNull(String value) {
+
+        if (value == null) {
+            return null;
+        }
+
+        String trimmed = value.trim();
+
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    // Status rules of the simplified Lead workflow, checked before anything
+    // is changed. Returns the invalid reason to store (null unless INVALID).
+    //  - Only NEW / VALID / INVALID can be chosen. A lead that already carries
+    //    an older legacy status may keep it (an unrelated edit must not
+    //    force a status change) but nobody can newly set one.
+    //  - INVALID needs a reason when the lead becomes INVALID (or already has
+    //    one). A historical INVALID lead with no reason stays editable - no
+    //    reason is invented for it.
+    private String validateStatusAndReason(
+            LeadStatus requested, LeadStatus previous, String previousReason, String requestedReason) {
+
+        if (requested == null) {
+            throw new IllegalArgumentException("Please select a Lead Status.");
+        }
+
+        if (!LeadWorkflow.isCore(requested) && requested != previous) {
+            throw new IllegalArgumentException(
+                    "Lead Status must be New, Valid or Invalid. (" + requested.name().replace('_', ' ')
+                            + " is an older status and can no longer be selected.)");
+        }
+
+        if (requested != LeadStatus.INVALID) {
+            return null;
+        }
+
+        String reason = trimToNull(requestedReason);
+
+        boolean wasInvalid = previous == LeadStatus.INVALID;
+        boolean hadReason = trimToNull(previousReason) != null;
+
+        if (reason == null && (!wasInvalid || hadReason)) {
+            throw new IllegalArgumentException("Please enter the reason this lead is invalid.");
+        }
+
+        return reason;
+    }
+
+    // Lead validity follows the status so the two can never contradict each
+    // other: INVALID <-> INVALID; NEW and VALID <-> VALID. A lead still
+    // carrying a legacy status keeps whatever validity it had.
+    private static LeadValidity validityFor(LeadStatus status, LeadValidity current) {
+
+        if (status == LeadStatus.INVALID) {
+            return LeadValidity.INVALID;
+        }
+
+        if (status == LeadStatus.NEW || status == LeadStatus.VALID) {
+            return LeadValidity.VALID;
+        }
+
+        return current != null ? current : LeadValidity.VALID;
+    }
+
+    // Marks the lead rows with the fields computed for the UI: converted
+    // (an Opportunity exists) and contactOverdue (NEW, deadline passed, no
+    // completed follow-up). One pair of queries for the whole batch.
+    void decorateLeads(Collection<Lead> leads) {
+
+        List<Long> ids = leads.stream().map(Lead::getId).filter(Objects::nonNull).toList();
+
+        if (ids.isEmpty()) {
+            return;
+        }
+
+        Set<Long> converted = new HashSet<>(opportunityRepository.findLeadIdsWithOpportunity(ids));
+        Set<Long> contacted = new HashSet<>(followUpRepository.findLeadIdsWithCompletedFollowUp(ids));
+
+        Set<Long> withNextAction = new HashSet<>();
+
+        for (Object[] row : followUpRepository.findPendingFutureByLeadIds(ids, BusinessClock.now())) {
+
+            if (FollowUpRules.hasDescription((String) row[1])) {
+                withNextAction.add((Long) row[0]);
+            }
+        }
+
+        LocalDateTime staleCutoff = StaleLeadRules.cutoff(staleAfterMonths);
+        Set<Long> recentlyActive = new HashSet<>(followUpRepository.findLeadIdsWithFollowUpSince(ids, staleCutoff));
+
+        LocalDate today = BusinessClock.today();
+
+        for (Lead lead : leads) {
+
+            boolean isConverted = converted.contains(lead.getId());
+
+            lead.setConverted(isConverted);
+
+            boolean overdue = lead.getContactDeadline() != null
+                    && lead.getContactDeadline().isBefore(today)
+                    && LeadWorkflow.effectiveStatus(lead.getLeadStatus(), isConverted) == LeadStatus.NEW
+                    && !contacted.contains(lead.getId());
+
+            lead.setContactOverdue(overdue);
+
+            lead.setHasNextAction(withNextAction.contains(lead.getId()));
+
+            lead.setStale(!isConverted
+                    && lead.getLeadStatus() != null
+                    && StaleLeadRules.OPEN_STATUSES.contains(lead.getLeadStatus())
+                    && lead.getUpdatedAt() != null
+                    && lead.getUpdatedAt().isBefore(staleCutoff)
+                    && !recentlyActive.contains(lead.getId()));
+        }
     }
 
     // Single reusable list query backing both the main /api/leads endpoint
@@ -165,7 +302,9 @@ public class LeadService {
         Specification<Lead> spec = buildSpecification(criteria, employeeIds);
         Sort sort = SortWhitelist.resolve(sortBy, sortDir, SORT_FIELDS, "createdDate");
 
-        return leadRepository.findAll(spec, PageRequest.of(page, size, sort));
+        Page<Lead> result = leadRepository.findAll(spec, PageRequest.of(page, size, sort));
+        decorateLeads(result.getContent());
+        return result;
     }
 
     // Same filter/RBAC scoping as searchLeads, but unpaged (capped) and
@@ -253,6 +392,9 @@ public class LeadService {
                 LeadSpecifications.ownerIn(employeeIds),
                 LeadSpecifications.search(criteria.getSearch()),
                 LeadSpecifications.hasStatus(criteria.getStatus()),
+                LeadSpecifications.inStatusGroup(criteria.getStatusGroup()),
+                Boolean.TRUE.equals(criteria.getInactiveView())
+                        ? LeadSpecifications.inactiveView(StaleLeadRules.cutoff(staleAfterMonths)) : null,
                 LeadSpecifications.hasLeadSourceId(criteria.getLeadSourceId()),
                 LeadSpecifications.hasIndustryId(criteria.getIndustryId()),
                 LeadSpecifications.hasProductId(criteria.getProductId()),
@@ -276,6 +418,8 @@ public class LeadService {
                 "Viewed lead"
         );
 
+        decorateLeads(List.of(lead));
+
         return lead;
     }
 
@@ -285,6 +429,14 @@ public class LeadService {
 
         LeadStatus previousStatus = lead.getLeadStatus();
         String previousRemarks = lead.getFinalRemarks();
+        String previousInvalidReason = lead.getInvalidReason();
+        LocalDate previousContactDeadline = lead.getContactDeadline();
+        String previousAssignee = lead.getAssignedEmployee() == null ? null : lead.getAssignedEmployee().getName();
+
+        // Validate the status rules first so a rejected update leaves the
+        // lead completely untouched.
+        String newInvalidReason = validateStatusAndReason(
+                request.getLeadStatus(), previousStatus, previousInvalidReason, request.getInvalidReason());
 
         lead.setCompanyName(request.getCompanyName());
         lead.setContactPerson(request.getContactPerson());
@@ -305,6 +457,14 @@ public class LeadService {
 
         lead.setDescription(request.getDescription());
         lead.setLeadStatus(request.getLeadStatus());
+        lead.setInvalidReason(newInvalidReason);
+        lead.setLeadValidity(validityFor(request.getLeadStatus(), lead.getLeadValidity()));
+
+        // The contact deadline is only replaced when one is supplied, so an
+        // older client that does not send it never wipes it.
+        if (request.getContactDeadline() != null) {
+            lead.setContactDeadline(request.getContactDeadline());
+        }
 
         boolean wasClosed = previousStatus != null && CLOSED_STATUSES.contains(previousStatus);
         boolean isClosed = lead.getLeadStatus() != null && CLOSED_STATUSES.contains(lead.getLeadStatus());
@@ -338,20 +498,34 @@ public class LeadService {
 
         Lead saved = leadRepository.save(lead);
 
-        // A plain "Updated lead" is uninformative when the status actually
-        // changed - previousStatus is already captured above for the
-        // closedAt transition, so reuse it here rather than adding a new
-        // ActivityAction just to say the same thing more specifically.
-        String updateDescription = !Objects.equals(previousStatus, saved.getLeadStatus())
-                ? "Status changed: " + previousStatus + " → " + saved.getLeadStatus()
-                : "Updated lead";
+        // Field-level history (field, old value, new value, actor, time) for
+        // the fields the workflow cares about - written only now that the
+        // save succeeded. Reassignment is recorded too, so ownership history
+        // survives. A save that changed none of them keeps the original
+        // generic entry.
+        int tracked = 0;
 
-        activityLogService.log(
-                currentEmployee,
-                ActivityModule.LEAD, ActivityAction.UPDATE,
-                saved.getId(), saved.getCompanyName(),
-                updateDescription
-        );
+        tracked += logLeadChange(currentEmployee, saved, "Lead status", "leadStatus",
+                previousStatus == null ? null : previousStatus.name(),
+                saved.getLeadStatus() == null ? null : saved.getLeadStatus().name());
+        tracked += logLeadChange(currentEmployee, saved, "Invalid reason", "invalidReason",
+                previousInvalidReason, saved.getInvalidReason());
+        tracked += logLeadChange(currentEmployee, saved, "Assigned to", "assignedEmployee",
+                previousAssignee,
+                saved.getAssignedEmployee() == null ? null : saved.getAssignedEmployee().getName());
+        tracked += logLeadChange(currentEmployee, saved, "Contact deadline", "contactDeadline",
+                previousContactDeadline == null ? null : previousContactDeadline.toString(),
+                saved.getContactDeadline() == null ? null : saved.getContactDeadline().toString());
+
+        if (tracked == 0) {
+
+            activityLogService.log(
+                    currentEmployee,
+                    ActivityModule.LEAD, ActivityAction.UPDATE,
+                    saved.getId(), saved.getCompanyName(),
+                    "Updated lead"
+            );
+        }
 
         if (!Objects.equals(previousRemarks, saved.getFinalRemarks())) {
 
@@ -363,7 +537,121 @@ public class LeadService {
             );
         }
 
+        decorateLeads(List.of(saved));
+
         return saved;
+    }
+
+    // ---- possible duplicate leads (warning / review aid, never blocks) ----
+
+    private static String normalizePhone(String phone) {
+
+        if (phone == null) {
+            return null;
+        }
+
+        String digits = phone.replaceAll("[^0-9]", "");
+
+        if (digits.length() > 10) {
+            digits = digits.substring(digits.length() - 10);
+        }
+
+        return digits.length() == 10 ? digits : null;
+    }
+
+    private static String normalizeEmail(String email) {
+
+        String e = trimToNull(email);
+
+        return e != null && e.contains("@") ? e.toLowerCase() : null;
+    }
+
+    private static String normalizeCompany(String company) {
+
+        String c = trimToNull(company);
+
+        return c != null && c.length() >= 3 ? c.toLowerCase() : null;
+    }
+
+    // Leads that look like the one being entered - same phone, email or
+    // company. Only leads the caller may view are described; any others are
+    // just counted (hiddenCount) so a duplicate outside their scope is still
+    // flagged without leaking its details. Blank / missing inputs are simply
+    // not matched on. Nothing is merged, changed or blocked.
+    public DuplicateLeadsResponse findPossibleDuplicates(String phone, String email, String company, Long excludeId) {
+
+        String p = normalizePhone(phone);
+        String e = normalizeEmail(email);
+        String c = normalizeCompany(company);
+
+        if (p == null && e == null && c == null) {
+            return new DuplicateLeadsResponse(List.of(), 0);
+        }
+
+        Employee currentEmployee = currentUserService.getCurrentEmployee();
+        List<Long> employeeIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, LEAD_VIEW);
+
+        Specification<Lead> any = LeadSpecifications.possibleDuplicateOf(p, e, c, excludeId);
+        Specification<Lead> visible = SpecificationUtil.and(java.util.Arrays.asList(
+                any, LeadSpecifications.ownerIn(employeeIds)));
+
+        long total = leadRepository.count(any);
+        long visibleCount = leadRepository.count(visible);
+
+        List<Lead> found = leadRepository
+                .findAll(visible, PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "createdAt")))
+                .getContent();
+
+        // A lead that already has an Opportunity is shown as VALID (same
+        // display rule as the lead list), so look up which matches are converted.
+        Set<Long> convertedIds = found.isEmpty() ? Set.of()
+                : new HashSet<>(opportunityRepository.findLeadIdsWithOpportunity(
+                        found.stream().map(Lead::getId).toList()));
+
+        List<DuplicateLeadsResponse.Match> matches = found.stream()
+                .map(lead -> {
+
+                    List<String> matchedOn = new ArrayList<>();
+
+                    if (p != null && (p.equals(lead.getPhone()) || p.equals(lead.getAlternatePhone()))) {
+                        matchedOn.add("phone");
+                    }
+
+                    if (e != null && (e.equals(normalizeEmail(lead.getEmail()))
+                            || e.equals(normalizeEmail(lead.getSecondaryEmail())))) {
+                        matchedOn.add("email");
+                    }
+
+                    if (c != null && lead.getCompanyName() != null
+                            && c.equals(lead.getCompanyName().trim().toLowerCase())) {
+                        matchedOn.add("company");
+                    }
+
+                    return new DuplicateLeadsResponse.Match(
+                            lead.getId(), lead.getCompanyName(), lead.getContactPerson(),
+                            lead.getPhone(), lead.getEmail(),
+                            LeadWorkflow.effectiveStatus(lead.getLeadStatus(), convertedIds.contains(lead.getId())).name(),
+                            lead.getAssignedEmployee() == null ? null : lead.getAssignedEmployee().getName(),
+                            matchedOn);
+                })
+                .toList();
+
+        return new DuplicateLeadsResponse(matches, Math.max(0, total - visibleCount));
+    }
+
+    private int logLeadChange(Employee actor, Lead lead, String label, String field, String oldValue, String newValue) {
+
+        if (Objects.equals(oldValue, newValue)) {
+            return 0;
+        }
+
+        activityLogService.logFieldChange(
+                actor, ActivityModule.LEAD,
+                lead.getId(), lead.getCompanyName(),
+                label, field, oldValue, newValue
+        );
+
+        return 1;
     }
 
     private void applyProducts(Lead lead, List<LeadProductRequest> products) {

@@ -68,7 +68,7 @@ import static org.mockito.Mockito.when;
  * observe the genuinely post-rollback state.
  */
 @DataJpaTest
-@Import({LeadService.class, OpportunityService.class, CustomerService.class, SalesStageService.class,
+@Import({LeadService.class, OpportunityService.class, FollowUpService.class, CustomerService.class, SalesStageService.class,
         ActivityLogService.class, AccessControlService.class, CurrentUserService.class})
 class LeadDeletionRollbackTest {
 

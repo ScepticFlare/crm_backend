@@ -125,7 +125,9 @@ public class CustomerService {
                 opportunity.getLead().getAssignedEmployee().getId()
         );
 
-        if (!"WON".equalsIgnoreCase(opportunity.getSalesStage().getName())) {
+        // WON is identified by its stable stage type, so renaming the WON
+        // stage does not break (or bypass) conversion.
+        if (!OpportunityWorkflow.is(opportunity.getSalesStage(), com.compact.crm.enums.SalesStageType.WON)) {
             throw new ResourceNotFoundException("Only WON opportunities can be converted.");
         }
 
@@ -158,7 +160,19 @@ public class CustomerService {
                 .opportunity(opportunity)
                 .build();
 
-        Customer saved = customerRepository.save(customer);
+        Customer saved;
+
+        try {
+
+            saved = customerRepository.save(customer);
+
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+
+            // A concurrent conversion of the same Opportunity won the race
+            // (customers.opportunity_id is unique) - return that Customer
+            // instead of failing or creating a duplicate.
+            return customerRepository.findByOpportunity(opportunity).orElseThrow(() -> e);
+        }
 
         activityLogService.log(
                 currentEmployee,

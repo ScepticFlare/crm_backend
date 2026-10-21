@@ -46,6 +46,12 @@ public class LeadStatusConstraintSync implements CommandLineRunner {
                 return;
             }
 
+            // Drop + re-add must be ONE transaction (PostgreSQL DDL is
+            // transactional): either the new constraint replaces the old one,
+            // or nothing changes - there is never a moment, or a failed
+            // start, with no constraint on the column.
+            connection.setAutoCommit(false);
+
             List<String> existingConstraints = new ArrayList<>();
 
             try (PreparedStatement ps = connection.prepareStatement("""
@@ -54,7 +60,8 @@ public class LeadStatusConstraintSync implements CommandLineRunner {
                     JOIN information_schema.constraint_column_usage ccu
                         ON cc.constraint_name = ccu.constraint_name
                         AND cc.constraint_schema = ccu.constraint_schema
-                    WHERE ccu.table_name = 'leads'
+                    WHERE ccu.table_schema = current_schema()
+                    AND ccu.table_name = 'leads'
                     AND ccu.column_name = 'lead_status'
                     """)) {
 
@@ -81,6 +88,13 @@ public class LeadStatusConstraintSync implements CommandLineRunner {
                         "ALTER TABLE leads ADD CONSTRAINT leads_lead_status_check " +
                                 "CHECK (lead_status IN (" + allowedValues + "))"
                 );
+
+                connection.commit();
+
+            } catch (Exception e) {
+
+                connection.rollback();
+                throw e;
             }
 
             log.info("leads_lead_status_check constraint synced with LeadStatus enum ({})", allowedValues);

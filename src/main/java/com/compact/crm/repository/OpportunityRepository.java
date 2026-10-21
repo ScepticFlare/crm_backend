@@ -106,18 +106,40 @@ public interface OpportunityRepository extends JpaRepository<Opportunity, Long>,
             @Param("batteryId") Long batteryId
     );
 
+    // Rows are [stage name, stage type (nullable), sub-status (nullable), count].
     // Backs the Dashboard's pipeline-by-stage breakdown (GET
     // /api/dashboard/stats) - a GROUP BY COUNT instead of fetching every
     // Opportunity row just to tally them client-side (see
     // service.DashboardService).
-    @Query("SELECT o.salesStage.name, COUNT(o) FROM Opportunity o GROUP BY o.salesStage.name")
+    @Query("SELECT o.salesStage.name, o.salesStage.stageType, o.subStatus, COUNT(o) FROM Opportunity o GROUP BY o.salesStage.name, o.salesStage.stageType, o.subStatus")
     List<Object[]> countAllGroupedBySalesStage();
 
     @Query("""
-        SELECT o.salesStage.name, COUNT(o)
+        SELECT o.salesStage.name, o.salesStage.stageType, o.subStatus, COUNT(o)
         FROM Opportunity o
         WHERE o.lead.assignedEmployee.id IN :employeeIds
-        GROUP BY o.salesStage.name
+        GROUP BY o.salesStage.name, o.salesStage.stageType, o.subStatus
     """)
     List<Object[]> countGroupedBySalesStageForEmployees(@Param("employeeIds") List<Long> employeeIds);
+
+    // Atomic "acknowledge": a no-op (0 rows) when this review date was
+    // already acknowledged, so repeated or concurrent clicks neither change
+    // anything twice nor produce duplicate history. Never touches the stage.
+    @org.springframework.transaction.annotation.Transactional
+    @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE Opportunity o
+        SET o.postponedReminderAcknowledgedFor = :date, o.updatedAt = :now
+        WHERE o.id = :id
+        AND o.postponedReviewDate = :date
+        AND (o.postponedReminderAcknowledgedFor IS NULL OR o.postponedReminderAcknowledgedFor <> :date)
+    """)
+    int acknowledgeReminder(
+            @Param("id") Long id,
+            @Param("date") java.time.LocalDate date,
+            @Param("now") java.time.LocalDateTime now);
+
+    // Which of these leads already have an Opportunity (drives "converted").
+    @Query("SELECT DISTINCT o.lead.id FROM Opportunity o WHERE o.lead.id IN :leadIds")
+    List<Long> findLeadIdsWithOpportunity(@Param("leadIds") List<Long> leadIds);
 }

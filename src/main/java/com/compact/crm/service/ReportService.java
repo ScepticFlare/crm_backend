@@ -122,7 +122,7 @@ public class ReportService {
             // to its own Lead Status so pre-conversion WON/LOST/DROPPED/
             // UNRESPONSIVE leads are still counted correctly.
             String state = opportunity != null
-                    ? opportunity.getSalesStage().getName().toUpperCase()
+                    ? OpportunityWorkflow.key(opportunity.getSalesStage())
                     : lead.getLeadStatus().name();
 
             switch (state) {
@@ -135,10 +135,12 @@ public class ReportService {
                     row.setLost(row.getLost() + 1);
                     break;
 
+                case "LEGACY_DROPPED":
                 case "DROPPED":
                     row.setDropped(row.getDropped() + 1);
                     break;
 
+                case "LEGACY_UNRESPONSIVE":
                 case "UNRESPONSIVE":
                     row.setUnresponsive(row.getUnresponsive() + 1);
                     break;

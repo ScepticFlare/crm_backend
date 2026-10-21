@@ -460,6 +460,8 @@ class LeadServiceTest {
     void updateLead_logsLeadUpdate() {
 
         grant(employeeRole, LEAD_MANAGE, Scope.OWN);
+        // already NEW, so this update changes none of the tracked workflow fields and keeps the generic entry
+        leadOfReportOfA.setLeadStatus(LeadStatus.NEW);
         when(currentUserService.getCurrentEmployee()).thenReturn(reportOfA);
         when(leadRepository.findById(100L)).thenReturn(Optional.of(leadOfReportOfA));
         stubLeadUpdateLookups();

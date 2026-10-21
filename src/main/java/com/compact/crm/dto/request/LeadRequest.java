@@ -62,6 +62,13 @@ public class LeadRequest {
     @NotNull(message = "Please select a Lead Status.")
     private LeadStatus leadStatus;
 
+    // Required when leadStatus is (becoming) INVALID - free text. Ignored for
+    // any other status.
+    private String invalidReason;
+
+    // Optional "contact by" date; defaults to a couple of days after creation.
+    private java.time.LocalDate contactDeadline;
+
     @NotNull(message = "Please select an Assigned Employee.")
     private Long assignedEmployeeId;
     private String finalRemarks;

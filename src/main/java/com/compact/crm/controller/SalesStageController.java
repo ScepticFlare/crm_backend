@@ -17,7 +17,12 @@ public class SalesStageController {
 
     private final SalesStageService service;
 
+    // Sales-stage configuration (create / rename / deactivate / activate)
+    // is ADMIN-only on the server. Reading stages (GET below) stays open to
+    // every authenticated user so Managers and Employees can still pick a
+    // stage while working on an Opportunity.
     @PostMapping
+    @PreAuthorize("hasRole('ADMIN')")
     public SalesStage create(
             @Valid @RequestBody SalesStageRequest request) {
 
@@ -41,6 +46,7 @@ public class SalesStageController {
     }
 
     @PutMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     public SalesStage update(
             @PathVariable Long id,
             @Valid @RequestBody SalesStageRequest request) {

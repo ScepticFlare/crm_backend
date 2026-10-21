@@ -1,6 +1,7 @@
 package com.compact.crm.dto.search;
 
 import com.compact.crm.enums.LeadValidity;
+import com.compact.crm.enums.SalesStageType;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -12,6 +13,9 @@ public class OpportunitySearchCriteria {
 
     private String search;
     private String stageName;
+    // Stable core-stage filter (used by the Postponed / Lost pages) - unlike
+    // stageName it survives an Admin renaming the stage.
+    private SalesStageType stageType;
     private Long salesStageId;
     private Long assignedEmployeeId;
     private Long productId;

@@ -1,8 +1,13 @@
 package com.compact.crm.specification;
 
+import com.compact.crm.entity.FollowUp;
 import com.compact.crm.entity.LeadProduct;
 import com.compact.crm.entity.Opportunity;
+import com.compact.crm.enums.FollowUpStatus;
 import com.compact.crm.enums.LeadValidity;
+import com.compact.crm.enums.SalesStageType;
+import com.compact.crm.service.OpportunityWorkflow;
+import jakarta.persistence.criteria.Root;
 import jakarta.persistence.criteria.Fetch;
 import jakarta.persistence.criteria.JoinType;
 import jakarta.persistence.criteria.Subquery;
@@ -168,6 +173,97 @@ public final class OpportunitySpecifications {
 
             return cb.lessThanOrEqualTo(root.get("productValue"), max);
         };
+    }
+
+
+    // ---- Workflow warnings (closing date / next action / postponed review) ----
+
+    // Stage types that mean "no longer being worked" (WON, LOST, POSTPONED).
+    private static final List<SalesStageType> NON_ACTIVE_TYPES = java.util.Arrays.stream(SalesStageType.values())
+            .filter(t -> !t.isActive())
+            .toList();
+
+    // Still being worked: a typed stage whose type is active, or a custom
+    // (untyped) stage. Mirrors OpportunityWorkflow.isActive and - being type
+    // based - is unaffected by an Admin renaming a stage or by a custom
+    // stage being given a reserved-looking name.
+    private static jakarta.persistence.criteria.Predicate activePredicate(
+            jakarta.persistence.criteria.Root<Opportunity> root,
+            jakarta.persistence.criteria.CriteriaBuilder cb) {
+
+        jakarta.persistence.criteria.Path<Object> type = root.get("salesStage").get("stageType");
+
+        return cb.or(
+                cb.isNull(type),
+                cb.not(type.in(NON_ACTIVE_TYPES))
+        );
+    }
+
+    public static Specification<Opportunity> activeStage() {
+        return (root, query, cb) -> activePredicate(root, cb);
+    }
+
+    // Filter by stable stage type (e.g. the Postponed / Lost pages), so a
+    // renamed core stage still shows up where it should.
+    public static Specification<Opportunity> hasStageType(SalesStageType stageType) {
+
+        if (stageType == null) {
+            return null;
+        }
+
+        return (root, query, cb) -> cb.equal(root.get("salesStage").get("stageType"), stageType);
+    }
+
+    // Active Opportunity whose expected closing date is before `today`.
+    public static Specification<Opportunity> closingDateExpired(LocalDate today) {
+
+        return (root, query, cb) -> cb.and(
+                cb.isNotNull(root.get("expectedClosingDate")),
+                cb.lessThan(root.<LocalDate>get("expectedClosingDate"), today),
+                activePredicate(root, cb)
+        );
+    }
+
+    // No QUALIFYING follow-up on the Opportunity itself or on its originating
+    // Lead: PENDING, scheduled `now` or later, with a described next action
+    // (remarks of at least FollowUpRules.MIN_NEXT_ACTION_LENGTH characters) -
+    // the same definition as service.FollowUpRules.
+    public static Specification<Opportunity> noQualifyingFollowUp(LocalDateTime now) {
+
+        return (root, query, cb) -> {
+
+            Subquery<Long> sub = query.subquery(Long.class);
+            Root<FollowUp> followUp = sub.from(FollowUp.class);
+
+            sub.select(followUp.<Long>get("id")).where(
+                    cb.equal(followUp.get("status"), FollowUpStatus.PENDING),
+                    cb.greaterThanOrEqualTo(followUp.<LocalDateTime>get("scheduledDate"), now),
+                    cb.isNotNull(followUp.get("remarks")),
+                    cb.greaterThanOrEqualTo(
+                            cb.length(cb.trim(followUp.<String>get("remarks"))),
+                            com.compact.crm.service.FollowUpRules.MIN_NEXT_ACTION_LENGTH),
+                    cb.or(
+                            cb.equal(followUp.get("opportunity").get("id"), root.get("id")),
+                            cb.equal(followUp.get("lead").get("id"), root.get("lead").get("id"))
+                    )
+            );
+
+            return cb.not(cb.exists(sub));
+        };
+    }
+
+    // POSTPONED, review date reached, and not yet acknowledged for that date.
+    public static Specification<Opportunity> postponedReminderDue(LocalDate today) {
+
+        return (root, query, cb) -> cb.and(
+                cb.equal(root.get("salesStage").get("stageType"), SalesStageType.POSTPONED),
+                cb.isNotNull(root.get("postponedReviewDate")),
+                cb.lessThanOrEqualTo(root.<LocalDate>get("postponedReviewDate"), today),
+                cb.or(
+                        cb.isNull(root.get("postponedReminderAcknowledgedFor")),
+                        cb.notEqual(root.get("postponedReminderAcknowledgedFor"), root.get("postponedReviewDate"))
+                )
+        );
     }
 
     // RBAC scope - Opportunity has no owner field of its own, ownership is

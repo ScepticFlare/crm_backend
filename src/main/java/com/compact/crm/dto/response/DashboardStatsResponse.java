@@ -19,10 +19,23 @@ public class DashboardStatsResponse {
     private long opportunities;
     private long followUps;
 
-    // Opportunity count grouped by sales stage name (e.g. "NEW" -> 4) -
+    // Opportunity count per pipeline bucket (NEW, IN_PROGRESS, POSTPONED, WON,
+    // LOST, OTHER) - every opportunity in scope is counted exactly once,
+    // grouped by sales stage name (e.g. "NEW" -> 4) -
     // covers every open opportunity in scope, not just the first 50.
     private Map<String, Long> pipeline;
 
     private List<RecentLeadResponse> recentLeads;
     private List<UpcomingFollowUpResponse> upcomingFollowUps;
+
+    // Of the opportunities counted under IN_PROGRESS in `pipeline`, how many
+    // are at each sub-status (QUOTATION_SENT / NEGOTIATION) or have none
+    // (NO_SUB_STATUS). These add up to pipeline.IN_PROGRESS - they are a
+    // breakdown of it, not extra opportunities.
+    private Map<String, Long> inProgressBreakdown;
+
+    // Internal carrier for DashboardService.tally - the two maps that fill
+    // `pipeline` and `inProgressBreakdown`.
+    public record PipelineCounts(Map<String, Long> pipeline, Map<String, Long> inProgressBreakdown) {
+    }
 }

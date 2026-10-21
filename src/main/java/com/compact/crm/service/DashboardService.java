@@ -4,6 +4,7 @@ import com.compact.crm.dto.response.DashboardStatsResponse;
 import com.compact.crm.dto.response.RecentLeadResponse;
 import com.compact.crm.dto.response.UpcomingFollowUpResponse;
 import com.compact.crm.entity.Employee;
+import com.compact.crm.enums.SalesStageType;
 import com.compact.crm.repository.CustomerRepository;
 import com.compact.crm.repository.FollowUpRepository;
 import com.compact.crm.repository.LeadRepository;
@@ -50,8 +51,8 @@ public class DashboardService {
     private final CurrentUserService currentUserService;
     private final AccessControlService accessControlService;
 
-    private static final List<String> PIPELINE_STAGES =
-            List.of("NEW", "QUOTATION_SENT", "NEGOTIATION", "POSTPONED", "WON", "LOST");
+    private static final List<String> PIPELINE_BUCKETS =
+            List.of("NEW", "IN_PROGRESS", "POSTPONED", "WON", "LOST", "OTHER");
 
     public DashboardStatsResponse getStats() {
 
@@ -67,7 +68,7 @@ public class DashboardService {
         long opportunityCount = opportunityRepository.count(OpportunitySpecifications.ownerIn(opportunityEmployeeIds));
         long followUpCount = followUpRepository.count(com.compact.crm.specification.FollowUpSpecifications.ownerIn(followUpEmployeeIds));
 
-        Map<String, Long> pipeline = buildPipeline(opportunityEmployeeIds);
+        DashboardStatsResponse.PipelineCounts pipelineCounts = buildPipeline(opportunityEmployeeIds);
 
         Pageable top5CreatedDesc = PageRequest.of(0, 5, Sort.by(Sort.Direction.DESC, "createdAt"));
         List<RecentLeadResponse> recentLeads = leadEmployeeIds == null
@@ -82,11 +83,12 @@ public class DashboardService {
 
         return new DashboardStatsResponse(
                 leadCount, customerCount, opportunityCount, followUpCount,
-                pipeline, recentLeads, upcomingFollowUps
+                pipelineCounts.pipeline(), recentLeads, upcomingFollowUps,
+                pipelineCounts.inProgressBreakdown()
         );
     }
 
-    private Map<String, Long> buildPipeline(List<Long> employeeIds) {
+    private DashboardStatsResponse.PipelineCounts buildPipeline(List<Long> employeeIds) {
 
         List<Object[]> rows = employeeIds == null
                 ? opportunityRepository.countAllGroupedBySalesStage()
@@ -94,30 +96,65 @@ public class DashboardService {
                         ? List.of()
                         : opportunityRepository.countGroupedBySalesStageForEmployees(employeeIds));
 
-        Map<String, Long> counts = new LinkedHashMap<>();
+        return tally(rows);
+    }
 
-        for (Object[] row : rows) {
-            counts.put((String) row[0], (Long) row[1]);
-        }
+    // Folds [stage name, stage type, sub-status, count] rows into the
+    // dashboard buckets. Every opportunity lands in exactly one pipeline
+    // bucket, decided by the stage's stable TYPE - not its display name - so
+    // an Admin renaming WON / LOST / POSTPONED / IN PROGRESS cannot move
+    // opportunities between buckets:
+    //  - IN_PROGRESS stages and the historical QUOTATION SENT / NEGOTIATION
+    //    stages (now sub-statuses of IN PROGRESS) all count as IN_PROGRESS;
+    //  - the in-progress breakdown then splits those same opportunities by
+    //    sub-status, so it sums to IN_PROGRESS rather than adding to it.
+    // Untyped (custom / historical) stages fall into OTHER.
+    static DashboardStatsResponse.PipelineCounts tally(List<Object[]> rows) {
 
         Map<String, Long> pipeline = new LinkedHashMap<>();
-        long other = 0;
+        for (String bucket : PIPELINE_BUCKETS) {
+            pipeline.put(bucket, 0L);
+        }
 
-        for (Map.Entry<String, Long> entry : counts.entrySet()) {
+        Map<String, Long> breakdown = new LinkedHashMap<>();
+        breakdown.put("QUOTATION_SENT", 0L);
+        breakdown.put("NEGOTIATION", 0L);
+        breakdown.put("NO_SUB_STATUS", 0L);
 
-            if (PIPELINE_STAGES.contains(entry.getKey())) {
-                pipeline.put(entry.getKey(), entry.getValue());
+        for (Object[] row : rows) {
+
+            SalesStageType type = (SalesStageType) row[1];
+            Object sub = row[2];
+            long count = ((Number) row[3]).longValue();
+
+            String bucket;
+
+            if (type == null) {
+                bucket = "OTHER";
             } else {
-                other += entry.getValue();
+                bucket = switch (type) {
+                    case NEW -> "NEW";
+                    case POSTPONED -> "POSTPONED";
+                    case WON -> "WON";
+                    case LOST -> "LOST";
+                    case IN_PROGRESS, LEGACY_QUOTATION_SENT, LEGACY_NEGOTIATION -> "IN_PROGRESS";
+                    case LEGACY_DROPPED, LEGACY_UNRESPONSIVE, LEGACY_INVALID -> "OTHER";
+                };
+            }
+
+            pipeline.merge(bucket, count, Long::sum);
+
+            if (bucket.equals("IN_PROGRESS")) {
+
+                String subKey = type == SalesStageType.LEGACY_QUOTATION_SENT ? "QUOTATION_SENT"
+                        : type == SalesStageType.LEGACY_NEGOTIATION ? "NEGOTIATION"
+                        : sub != null ? sub.toString()
+                        : "NO_SUB_STATUS";
+
+                breakdown.merge(subKey, count, Long::sum);
             }
         }
 
-        for (String stage : PIPELINE_STAGES) {
-            pipeline.putIfAbsent(stage, 0L);
-        }
-
-        pipeline.put("OTHER", other);
-
-        return pipeline;
+        return new DashboardStatsResponse.PipelineCounts(pipeline, breakdown);
     }
 }

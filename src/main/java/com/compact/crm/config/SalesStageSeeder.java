@@ -14,15 +14,14 @@ public class SalesStageSeeder implements CommandLineRunner {
     @Override
     public void run(String... args) {
 
-        salesStageService.findOrCreate("NEW");
-        salesStageService.findOrCreate("QUOTATION SENT");
-        salesStageService.findOrCreate("NEGOTIATION");
-        salesStageService.findOrCreate("POSTPONED");
-        salesStageService.findOrCreate("WON");
-        salesStageService.findOrCreate("LOST");
-        salesStageService.findOrCreate("DROPPED");
-        salesStageService.findOrCreate("UNRESPONSIVE");
-        salesStageService.findOrCreate("INVALID");
+        // Every seeded stage (NEW, IN PROGRESS, POSTPONED, WON, LOST and the
+        // historical DROPPED / UNRESPONSIVE / INVALID) is identified by a
+        // stable internal type, not by name: existing ones are tagged (never
+        // duplicated, even if an Admin renamed them) and missing ones are
+        // created. The historical QUOTATION SENT / NEGOTIATION stages are
+        // tagged if present but not created - they are now sub-statuses of
+        // IN PROGRESS.
+        salesStageService.ensureCoreStages();
 
     }
 }

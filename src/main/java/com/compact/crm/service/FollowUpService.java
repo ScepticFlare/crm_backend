@@ -77,6 +77,22 @@ public class FollowUpService {
         return null;
     }
 
+    // A PENDING follow-up on an Opportunity IS that opportunity's next action,
+    // so it has to say what the action is (remarks) - otherwise it could never
+    // satisfy the "active opportunity needs a next action" rule and the user
+    // would be left with a follow-up that does not count. Lead-level
+    // follow-ups (contact attempts) and COMPLETED / CANCELLED / MISSED ones
+    // are unaffected.
+    private static void requireNextActionIfOpportunityFollowUp(Opportunity opportunity, FollowUpRequest request) {
+
+        if (opportunity != null
+                && request.getStatus() == FollowUpStatus.PENDING
+                && !FollowUpRules.hasDescription(request.getRemarks())) {
+
+            throw new IllegalArgumentException(FollowUpRules.DESCRIPTION_REQUIRED_MESSAGE);
+        }
+    }
+
     public FollowUp createFollowUp(FollowUpRequest request) {
 
         if (request.getLeadId() == null && request.getOpportunityId() == null) {
@@ -111,6 +127,8 @@ public class FollowUpService {
         ActivityType activityType = activityTypeRepository
                 .findById(request.getActivityTypeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Activity Type not found"));
+
+        requireNextActionIfOpportunityFollowUp(opportunity, request);
 
         FollowUp followUp = FollowUp.builder()
                 .lead(lead)
@@ -292,6 +310,8 @@ public class FollowUpService {
 
         ActivityType activityType = activityTypeRepository.findById(request.getActivityTypeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Activity Type not found"));
+
+        requireNextActionIfOpportunityFollowUp(opportunity, request);
 
         followUp.setLead(lead);
         followUp.setOpportunity(opportunity);

@@ -206,4 +206,118 @@ public final class LeadSpecifications {
             return cb.conjunction();
         };
     }
+
+    // ---- possible-duplicate detection (warning only) ----
+
+    // Leads that share a normalized phone (phone or alternate phone), email
+    // (email or secondary email) or company name with the given values.
+    // Any blank/absent input is simply not matched on - an all-blank call
+    // matches nothing.
+    public static Specification<Lead> possibleDuplicateOf(String phone, String email, String company, Long excludeId) {
+
+        return (root, query, cb) -> {
+
+            java.util.List<jakarta.persistence.criteria.Predicate> any = new java.util.ArrayList<>();
+
+            if (phone != null) {
+                any.add(cb.equal(root.get("phone"), phone));
+                any.add(cb.equal(root.get("alternatePhone"), phone));
+            }
+
+            if (email != null) {
+                any.add(cb.equal(cb.lower(cb.trim(root.<String>get("email"))), email));
+                any.add(cb.equal(cb.lower(cb.trim(root.<String>get("secondaryEmail"))), email));
+            }
+
+            if (company != null) {
+                any.add(cb.equal(cb.lower(cb.trim(root.<String>get("companyName"))), company));
+            }
+
+            if (any.isEmpty()) {
+                return cb.disjunction();
+            }
+
+            jakarta.persistence.criteria.Predicate match = cb.or(any.toArray(new jakarta.persistence.criteria.Predicate[0]));
+
+            return excludeId == null ? match : cb.and(match, cb.notEqual(root.get("id"), excludeId));
+        };
+    }
+
+    // The display-status groups of the simplified lead workflow, evaluated
+    // server-side so a legacy-status lead is found under the group it is
+    // SHOWN under (see service.LeadWorkflow.effectiveStatus):
+    //   INVALID - stored INVALID;
+    //   VALID   - stored VALID, or already converted (an Opportunity exists);
+    //   NEW     - everything else.
+    // Any other value is ignored (no filter).
+    public static Specification<Lead> inStatusGroup(LeadStatus group) {
+
+        if (group != LeadStatus.NEW && group != LeadStatus.VALID && group != LeadStatus.INVALID) {
+            return null;
+        }
+
+        return (root, query, cb) -> {
+
+            Subquery<Long> sub = query.subquery(Long.class);
+            jakarta.persistence.criteria.Root<com.compact.crm.entity.Opportunity> opp =
+                    sub.from(com.compact.crm.entity.Opportunity.class);
+            sub.select(opp.<Long>get("id")).where(cb.equal(opp.get("lead").get("id"), root.get("id")));
+
+            jakarta.persistence.criteria.Predicate converted = cb.exists(sub);
+            jakarta.persistence.criteria.Predicate isInvalid = cb.equal(root.get("leadStatus"), LeadStatus.INVALID);
+            jakarta.persistence.criteria.Predicate isValid = cb.equal(root.get("leadStatus"), LeadStatus.VALID);
+
+            return switch (group) {
+                case INVALID -> isInvalid;
+                case VALID -> cb.and(cb.not(isInvalid), cb.or(isValid, converted));
+                default -> cb.and(cb.not(isInvalid), cb.not(isValid), cb.not(converted));
+            };
+        };
+    }
+
+    // ---- stale-lead detection (READ-ONLY; see service.StaleLeadRules) ----
+
+    // A lead with an open status, not edited since the cutoff, no follow-up
+    // created/updated since the cutoff, and no Opportunity.
+    public static Specification<Lead> stale(LocalDateTime cutoff) {
+
+        return (root, query, cb) -> {
+
+            Subquery<Long> recentFollowUp = query.subquery(Long.class);
+            jakarta.persistence.criteria.Root<com.compact.crm.entity.FollowUp> f =
+                    recentFollowUp.from(com.compact.crm.entity.FollowUp.class);
+            recentFollowUp.select(f.<Long>get("id")).where(
+                    cb.equal(f.get("lead").get("id"), root.get("id")),
+                    cb.or(
+                            cb.greaterThanOrEqualTo(f.<LocalDateTime>get("updatedAt"), cutoff),
+                            cb.greaterThanOrEqualTo(f.<LocalDateTime>get("createdAt"), cutoff)
+                    )
+            );
+
+            Subquery<Long> opportunity = query.subquery(Long.class);
+            jakarta.persistence.criteria.Root<com.compact.crm.entity.Opportunity> o =
+                    opportunity.from(com.compact.crm.entity.Opportunity.class);
+            opportunity.select(o.<Long>get("id")).where(cb.equal(o.get("lead").get("id"), root.get("id")));
+
+            return cb.and(
+                    root.get("leadStatus").in(com.compact.crm.service.StaleLeadRules.OPEN_STATUSES),
+                    cb.lessThan(root.<LocalDateTime>get("updatedAt"), cutoff),
+                    cb.not(cb.exists(recentFollowUp)),
+                    cb.not(cb.exists(opportunity))
+            );
+        };
+    }
+
+    // The Inactive Leads page: leads whose STORED status is the historical
+    // INACTIVE, OR that are merely stale right now. One query with OR, so a
+    // lead that satisfies both appears once.
+    public static Specification<Lead> inactiveView(LocalDateTime cutoff) {
+
+        Specification<Lead> stale = stale(cutoff);
+
+        return (root, query, cb) -> cb.or(
+                cb.equal(root.get("leadStatus"), LeadStatus.INACTIVE),
+                stale.toPredicate(root, query, cb)
+        );
+    }
 }

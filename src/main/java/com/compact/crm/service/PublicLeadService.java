@@ -122,6 +122,7 @@ public class PublicLeadService {
                 .otherIndustryDetail(otherIndustryDetail)
                 .description(request.getDescription().trim())
                 .leadStatus(LeadStatus.NEW)
+                .contactDeadline(com.compact.crm.util.BusinessClock.today().plusDays(LeadWorkflow.DEFAULT_CONTACT_DEADLINE_DAYS))
                 .leadValidity(LeadValidity.VALID)
                 .leadSource(leadSource)
                 .assignedEmployee(assignee)
