@@ -243,6 +243,54 @@ public final class LeadSpecifications {
         };
     }
 
+    // Lifecycle categories (enums.LeadCategory) - mutually exclusive, so a
+    // lead matches exactly one. Conversion is the opportunities.lead_id
+    // relationship, never a status label. A null/empty selection means "no
+    // restriction" (every category).
+    public static Specification<com.compact.crm.entity.Lead> inCategories(
+            java.util.Set<com.compact.crm.enums.LeadCategory> categories) {
+
+        if (categories == null) {
+            return null;
+        }
+
+        if (categories.isEmpty()) {
+            return (root, query, cb) -> cb.disjunction();
+        }
+
+        return (root, query, cb) -> {
+
+            Subquery<Long> sub = query.subquery(Long.class);
+            jakarta.persistence.criteria.Root<com.compact.crm.entity.Opportunity> opp =
+                    sub.from(com.compact.crm.entity.Opportunity.class);
+            sub.select(opp.<Long>get("id")).where(cb.equal(opp.get("lead").get("id"), root.get("id")));
+
+            jakarta.persistence.criteria.Predicate converted = cb.exists(sub);
+            // NULL-safe negations: a lead with no stored status is NEW
+            // (LeadWorkflow.effectiveStatus), and "NOT (NULL = x)" would
+            // otherwise be unknown and drop the row from every category.
+            jakarta.persistence.criteria.Predicate isInvalid = cb.equal(root.get("leadStatus"), LeadStatus.INVALID);
+            jakarta.persistence.criteria.Predicate notInvalid =
+                    cb.or(cb.isNull(root.get("leadStatus")), cb.notEqual(root.get("leadStatus"), LeadStatus.INVALID));
+            jakarta.persistence.criteria.Predicate isValid = cb.equal(root.get("leadStatus"), LeadStatus.VALID);
+            jakarta.persistence.criteria.Predicate notValid =
+                    cb.or(cb.isNull(root.get("leadStatus")), cb.notEqual(root.get("leadStatus"), LeadStatus.VALID));
+
+            List<jakarta.persistence.criteria.Predicate> any = new java.util.ArrayList<>();
+
+            for (com.compact.crm.enums.LeadCategory category : categories) {
+                any.add(switch (category) {
+                    case INVALID -> isInvalid;
+                    case CONVERTED -> cb.and(notInvalid, converted);
+                    case VALID_UNCONVERTED -> cb.and(notInvalid, cb.not(converted), isValid);
+                    case NEW -> cb.and(notInvalid, cb.not(converted), notValid);
+                });
+            }
+
+            return cb.or(any.toArray(new jakarta.persistence.criteria.Predicate[0]));
+        };
+    }
+
     // The display-status groups of the simplified lead workflow, evaluated
     // server-side so a legacy-status lead is found under the group it is
     // SHOWN under (see service.LeadWorkflow.effectiveStatus):

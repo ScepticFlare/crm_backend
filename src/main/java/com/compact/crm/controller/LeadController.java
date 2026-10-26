@@ -6,22 +6,20 @@ import com.compact.crm.dto.response.BulkOperationResult;
 import com.compact.crm.dto.response.DeleteImpactResponse;
 import com.compact.crm.dto.search.LeadSearchCriteria;
 import com.compact.crm.entity.Lead;
+import com.compact.crm.enums.LeadCategory;
 import com.compact.crm.enums.LeadStatus;
 import com.compact.crm.service.LeadService;
-import com.compact.crm.util.CsvWriter;
+import com.compact.crm.util.TableExport;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
-import org.springframework.http.ContentDisposition;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/api/leads")
@@ -45,7 +43,30 @@ public class LeadController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        return leadService.searchLeads(criteria, page, size, sortBy, sortDir);
+        return leadService.searchActiveLeads(criteria, page, size, sortBy, sortDir);
+    }
+
+    // History / reporting view of every lead category, RBAC-scoped like the
+    // list. `category`: ALL (default), ACTIVE, NEW, VALID_UNCONVERTED,
+    // INVALID or CONVERTED. Invalid and converted leads are NOT in the
+    // operational list above; this is where they stay reachable.
+    @GetMapping("/report")
+    public Page<Lead> getLeadsByCategory(
+            @ModelAttribute LeadSearchCriteria criteria,
+            @RequestParam(required = false) String category,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "50") int size,
+            @RequestParam(required = false) String sortBy,
+            @RequestParam(required = false) String sortDir
+    ) {
+        return leadService.searchLeadsInCategories(
+                criteria, LeadCategory.parseSelection(category, null), page, size, sortBy, sortDir);
+    }
+
+    // Count per category (+ TOTAL) for the same filters, ignoring `category`.
+    @GetMapping("/report/counts")
+    public Map<String, Long> getLeadCategoryCounts(@ModelAttribute LeadSearchCriteria criteria) {
+        return leadService.countByCategory(criteria);
     }
 
     // Status-bucket routes are thin wrappers over the same searchLeads
@@ -159,57 +180,57 @@ public class LeadController {
         return leadService.bulkDeleteLeads(request.getIds());
     }
 
-    // CSV export of the same RBAC-scoped, filtered, sorted result set the
-    // list endpoint would return. `ids` (comma-separated), when present,
-    // narrows to exactly those rows (bulk "export selected") - still
-    // AND-ed with the RBAC scope, so it can never surface a record outside
-    // the caller's visibility even if an out-of-scope id is included.
+    // Export of the same RBAC-scoped, filtered, sorted result set the list
+    // endpoint would return (XLSX by default, `format=csv` for CSV).
+    // `category` picks what is exported: ACTIVE (default - the operational
+    // Leads page), ALL, or one of NEW / VALID_UNCONVERTED / INVALID /
+    // CONVERTED. `ids` (comma-separated), when present, narrows to exactly
+    // those rows (bulk "export selected") - still AND-ed with the RBAC scope
+    // and the category, so it can never surface a record outside the
+    // caller's visibility even if an out-of-scope id is included.
     @GetMapping("/export")
     public ResponseEntity<byte[]> exportLeads(
             @ModelAttribute LeadSearchCriteria criteria,
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir,
-            @RequestParam(required = false) String ids
+            @RequestParam(required = false) String ids,
+            @RequestParam(required = false) String category,
+            @RequestParam(required = false) String format
     ) {
 
         List<Long> idList = parseIds(ids);
+        Set<LeadCategory> categories = LeadCategory.parseSelection(category, LeadCategory.ACTIVE);
 
-        List<Lead> leads = leadService.findForExport(criteria, idList, sortBy, sortDir);
+        List<Lead> leads = leadService.findForExport(criteria, idList, sortBy, sortDir, categories);
 
-        List<String> headers = List.of(
-                "Company", "Contact Person", "Phone", "Email", "City", "State",
-                "Lead Status", "Lead Source", "Campaign Code", "Industry", "Assigned Employee", "Created Date"
+        List<TableExport.Column<Lead>> columns = List.of(
+                TableExport.Column.text("Company", Lead::getCompanyName),
+                TableExport.Column.text("Contact Person", Lead::getContactPerson),
+                TableExport.Column.text("Phone", Lead::getPhone),
+                TableExport.Column.text("Alternate Phone", Lead::getAlternatePhone),
+                TableExport.Column.text("Email", Lead::getEmail),
+                TableExport.Column.text("City", Lead::getCity),
+                TableExport.Column.text("State", Lead::getState),
+                TableExport.Column.text("Lead Category", l -> l.getCategory() != null ? categoryLabel(l.getCategory()) : null),
+                TableExport.Column.text("Lead Status", l -> l.getLeadStatus() != null ? l.getLeadStatus().name() : null),
+                TableExport.Column.text("Invalid Reason", Lead::getInvalidReason),
+                TableExport.Column.text("Lead Source", l -> l.getLeadSource() != null ? l.getLeadSource().getName() : null),
+                TableExport.Column.text("Campaign Code", Lead::getCampaignCode),
+                TableExport.Column.text("Industry", l -> l.getIndustry() != null ? l.getIndustry().getName() : null),
+                TableExport.Column.text("Assigned Employee", l -> l.getAssignedEmployee() != null ? l.getAssignedEmployee().getName() : null),
+                TableExport.Column.dateTime("Created Date", Lead::getCreatedAt)
         );
 
-        List<List<String>> rows = new ArrayList<>();
+        return TableExport.response("leads", format, "Leads", columns, leads);
+    }
 
-        for (Lead lead : leads) {
-
-            rows.add(List.of(
-                    nullToEmpty(lead.getCompanyName()),
-                    nullToEmpty(lead.getContactPerson()),
-                    nullToEmpty(lead.getPhone()),
-                    nullToEmpty(lead.getEmail()),
-                    nullToEmpty(lead.getCity()),
-                    nullToEmpty(lead.getState()),
-                    lead.getLeadStatus() != null ? lead.getLeadStatus().name() : "",
-                    lead.getLeadSource() != null ? lead.getLeadSource().getName() : "",
-                    nullToEmpty(lead.getCampaignCode()),
-                    lead.getIndustry() != null ? lead.getIndustry().getName() : "",
-                    lead.getAssignedEmployee() != null ? lead.getAssignedEmployee().getName() : "",
-                    lead.getCreatedAt() != null ? lead.getCreatedAt().toString() : ""
-            ));
-        }
-
-        String csv = CsvWriter.write(headers, rows);
-        byte[] body = csv.getBytes(StandardCharsets.UTF_8);
-
-        HttpHeaders responseHeaders = new HttpHeaders();
-        responseHeaders.setContentType(MediaType.parseMediaType("text/csv"));
-        responseHeaders.setContentDisposition(
-                ContentDisposition.attachment().filename("leads.csv", StandardCharsets.UTF_8).build());
-
-        return new ResponseEntity<>(body, responseHeaders, org.springframework.http.HttpStatus.OK);
+    private static String categoryLabel(LeadCategory category) {
+        return switch (category) {
+            case NEW -> "New";
+            case VALID_UNCONVERTED -> "Valid (not converted)";
+            case INVALID -> "Invalid";
+            case CONVERTED -> "Converted to opportunity";
+        };
     }
 
     private List<Long> parseIds(String ids) {
@@ -225,7 +246,4 @@ public class LeadController {
                 .toList();
     }
 
-    private String nullToEmpty(String value) {
-        return value != null ? value : "";
-    }
 }

@@ -8,7 +8,6 @@ import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -16,12 +15,6 @@ import java.util.function.Function;
 
 @Service
 public class FullReportExcelExportService {
-
-    private static final DateTimeFormatter DATE_TIME_FORMAT =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
-
-    private static final DateTimeFormatter DATE_FORMAT =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
     private record ColumnSpec<T>(String header, Function<T, Object> valueFn) {
     }
@@ -268,14 +261,17 @@ public class FullReportExcelExportService {
 
         Row headerRow = sheet.createRow(2);
 
+        // widest content (in characters) per column, so no value is clipped or
+        // shown as ####
+        int[] widths = new int[columns.size()];
+
         for (int c = 0; c < columns.size(); c++) {
 
             Cell cell = headerRow.createCell(c);
             cell.setCellValue(columns.get(c).header());
             cell.setCellStyle(styles.header);
 
-            int width = Math.min(15000, Math.max(3000, (columns.get(c).header().length() + 6) * 256));
-            sheet.setColumnWidth(c, width);
+            widths[c] = columns.get(c).header().length() + 3;
         }
 
         int rowNum = 3;
@@ -289,12 +285,16 @@ public class FullReportExcelExportService {
                 Cell cell = excelRow.createCell(c);
                 cell.setCellStyle(styles.data);
 
-                setCellValue(cell, columns.get(c).valueFn().apply(row));
+                widths[c] = Math.max(widths[c], setCellValue(cell, columns.get(c).valueFn().apply(row), styles));
             }
         }
 
         if (!columns.isEmpty()) {
             sheet.setAutoFilter(new CellRangeAddress(2, 2, 0, lastCol));
+        }
+
+        for (int c = 0; c < columns.size(); c++) {
+            sheet.setColumnWidth(c, (Math.min(80, Math.max(8, widths[c])) + 2) * 256);
         }
 
         sheet.createFreezePane(0, 3);
@@ -402,23 +402,59 @@ public class FullReportExcelExportService {
         return rowNum;
     }
 
-    private void setCellValue(Cell cell, Object value) {
+    // Writes the value as a typed cell and returns its display width in
+    // characters. Text (phone numbers, names, codes) stays text; dates are
+    // real date cells with a date format; numbers are real numbers.
+    private int setCellValue(Cell cell, Object value, Styles styles) {
 
         if (value == null) {
-            return;
+            return 0;
         }
 
         switch (value) {
 
-            case String s -> cell.setCellValue(s);
+            case String s -> {
+                cell.setCellValue(s);
+                cell.setCellStyle(styles.text);
+                return s.length() + 1;
+            }
 
-            case java.time.LocalDateTime ldt -> cell.setCellValue(ldt.format(DATE_TIME_FORMAT));
+            case java.time.LocalDateTime ldt -> {
+                cell.setCellValue(ldt);
+                cell.setCellStyle(styles.dateTime);
+                return 18;
+            }
 
-            case java.time.LocalDate ld -> cell.setCellValue(ld.format(DATE_FORMAT));
+            case java.time.LocalDate ld -> {
+                cell.setCellValue(ld);
+                cell.setCellStyle(styles.date);
+                return 12;
+            }
 
-            case Number n -> cell.setCellValue(n.doubleValue());
+            case Integer i -> {
+                cell.setCellValue(i.doubleValue());
+                cell.setCellStyle(styles.integer);
+                return String.valueOf(i).length() + 1;
+            }
 
-            default -> cell.setCellValue(value.toString());
+            case Long l -> {
+                cell.setCellValue(l.doubleValue());
+                cell.setCellStyle(styles.integer);
+                return String.valueOf(l).length() + 1;
+            }
+
+            case Number n -> {
+                cell.setCellValue(n.doubleValue());
+                cell.setCellStyle(styles.decimal);
+                return String.format("%,.2f", n.doubleValue()).length() + 2;
+            }
+
+            default -> {
+                String s = value.toString();
+                cell.setCellValue(s);
+                cell.setCellStyle(styles.text);
+                return s.length() + 1;
+            }
         }
     }
 
@@ -429,6 +465,11 @@ public class FullReportExcelExportService {
         final CellStyle title;
         final CellStyle header;
         final CellStyle data;
+        final CellStyle text;
+        final CellStyle date;
+        final CellStyle dateTime;
+        final CellStyle integer;
+        final CellStyle decimal;
 
         Styles(Workbook workbook) {
 
@@ -462,6 +503,22 @@ public class FullReportExcelExportService {
             data.setBorderBottom(BorderStyle.THIN);
             data.setBorderLeft(BorderStyle.THIN);
             data.setBorderRight(BorderStyle.THIN);
+
+            var formats = workbook.createDataFormat();
+
+            text = derive(workbook, data, formats.getFormat("@"));
+            date = derive(workbook, data, formats.getFormat("yyyy-mm-dd"));
+            dateTime = derive(workbook, data, formats.getFormat("yyyy-mm-dd hh:mm"));
+            integer = derive(workbook, data, formats.getFormat("0"));
+            decimal = derive(workbook, data, formats.getFormat("#,##0.00"));
+        }
+
+        private static CellStyle derive(Workbook workbook, CellStyle base, short format) {
+
+            CellStyle style = workbook.createCellStyle();
+            style.cloneStyleFrom(base);
+            style.setDataFormat(format);
+            return style;
         }
     }
 }

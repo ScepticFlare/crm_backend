@@ -7,19 +7,13 @@ import com.compact.crm.dto.response.DeleteImpactResponse;
 import com.compact.crm.dto.search.CustomerSearchCriteria;
 import com.compact.crm.entity.Customer;
 import com.compact.crm.service.CustomerService;
-import com.compact.crm.util.CsvWriter;
+import com.compact.crm.util.TableExport;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
-import org.springframework.http.ContentDisposition;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -96,44 +90,27 @@ public class CustomerController {
             @ModelAttribute CustomerSearchCriteria criteria,
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir,
-            @RequestParam(required = false) String ids
+            @RequestParam(required = false) String ids,
+            @RequestParam(required = false) String format
     ) {
 
         List<Long> idList = parseIds(ids);
         List<Customer> customers = customerService.findForExport(criteria, idList, sortBy, sortDir);
 
-        List<String> headers = List.of(
-                "Customer Code", "Company", "Contact Person", "Phone", "Email",
-                "City", "State", "GST Number", "Assigned Employee", "Created Date"
+        List<TableExport.Column<Customer>> columns = List.of(
+                TableExport.Column.text("Customer Code", Customer::getCustomerCode),
+                TableExport.Column.text("Company", Customer::getCompanyName),
+                TableExport.Column.text("Contact Person", Customer::getContactPerson),
+                TableExport.Column.text("Phone", Customer::getPhone),
+                TableExport.Column.text("Email", Customer::getEmail),
+                TableExport.Column.text("City", Customer::getCity),
+                TableExport.Column.text("State", Customer::getState),
+                TableExport.Column.text("GST Number", Customer::getGstNumber),
+                TableExport.Column.text("Assigned Employee", c -> c.getAssignedEmployee() != null ? c.getAssignedEmployee().getName() : null),
+                TableExport.Column.dateTime("Created Date", Customer::getCreatedAt)
         );
 
-        List<List<String>> rows = new ArrayList<>();
-
-        for (Customer c : customers) {
-
-            rows.add(List.of(
-                    nullToEmpty(c.getCustomerCode()),
-                    nullToEmpty(c.getCompanyName()),
-                    nullToEmpty(c.getContactPerson()),
-                    nullToEmpty(c.getPhone()),
-                    nullToEmpty(c.getEmail()),
-                    nullToEmpty(c.getCity()),
-                    nullToEmpty(c.getState()),
-                    nullToEmpty(c.getGstNumber()),
-                    c.getAssignedEmployee() != null ? c.getAssignedEmployee().getName() : "",
-                    c.getCreatedAt() != null ? c.getCreatedAt().toString() : ""
-            ));
-        }
-
-        String csv = CsvWriter.write(headers, rows);
-        byte[] body = csv.getBytes(StandardCharsets.UTF_8);
-
-        HttpHeaders responseHeaders = new HttpHeaders();
-        responseHeaders.setContentType(MediaType.parseMediaType("text/csv"));
-        responseHeaders.setContentDisposition(
-                ContentDisposition.attachment().filename("customers.csv", StandardCharsets.UTF_8).build());
-
-        return new ResponseEntity<>(body, responseHeaders, HttpStatus.OK);
+        return TableExport.response("customers", format, "Customers", columns, customers);
     }
 
     private List<Long> parseIds(String ids) {
@@ -149,7 +126,4 @@ public class CustomerController {
                 .toList();
     }
 
-    private String nullToEmpty(String value) {
-        return value != null ? value : "";
-    }
 }

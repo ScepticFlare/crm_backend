@@ -25,6 +25,22 @@ public final class CsvWriter {
         return sb.toString();
     }
 
+    // UTF-8 with a byte-order mark: without it Excel decodes the file as the
+    // local ANSI code page and mangles non-ASCII names.
+    public static byte[] toUtf8BytesWithBom(String csv) {
+
+        byte[] body = csv.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] out = new byte[body.length + 3];
+
+        out[0] = (byte) 0xEF;
+        out[1] = (byte) 0xBB;
+        out[2] = (byte) 0xBF;
+
+        System.arraycopy(body, 0, out, 3, body.length);
+
+        return out;
+    }
+
     private static void appendRow(StringBuilder sb, List<String> values) {
 
         for (int i = 0; i < values.size(); i++) {

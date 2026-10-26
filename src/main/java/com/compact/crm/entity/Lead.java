@@ -156,6 +156,14 @@ public class Lead {
         return LeadWorkflow.effectiveStatus(leadStatus, Boolean.TRUE.equals(converted));
     }
 
+    // Lifecycle category (NEW / VALID_UNCONVERTED / INVALID / CONVERTED - see
+    // enums.LeadCategory). Only meaningful once `converted` has been computed
+    // (list and export responses); null otherwise rather than a wrong guess.
+    @JsonProperty("category")
+    public com.compact.crm.enums.LeadCategory getCategory() {
+        return converted == null ? null : LeadWorkflow.categoryOf(leadStatus, converted);
+    }
+
     // The original value when it is one of the older opportunity-style
     // statuses (CONTACTED, WON, DROPPED...), else null.
     @JsonProperty("legacyStatus")

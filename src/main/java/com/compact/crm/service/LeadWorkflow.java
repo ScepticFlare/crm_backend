@@ -55,6 +55,24 @@ public final class LeadWorkflow {
         return LeadStatus.NEW;
     }
 
+    // The lifecycle category (see enums.LeadCategory) - the in-memory twin of
+    // LeadSpecifications.inCategories, kept side by side so a row's label and
+    // the query that selected it always agree.
+    public static com.compact.crm.enums.LeadCategory categoryOf(LeadStatus stored, boolean converted) {
+
+        if (stored == LeadStatus.INVALID) {
+            return com.compact.crm.enums.LeadCategory.INVALID;
+        }
+
+        if (converted) {
+            return com.compact.crm.enums.LeadCategory.CONVERTED;
+        }
+
+        return stored == LeadStatus.VALID
+                ? com.compact.crm.enums.LeadCategory.VALID_UNCONVERTED
+                : com.compact.crm.enums.LeadCategory.NEW;
+    }
+
     // Null when the lead may be converted, otherwise the reason it may not.
     // Single source of truth for the backend check and the UI tooltip.
     public static String conversionBlockedReason(Lead lead, boolean converted) {

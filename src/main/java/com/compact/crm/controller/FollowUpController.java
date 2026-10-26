@@ -6,19 +6,13 @@ import com.compact.crm.dto.response.BulkOperationResult;
 import com.compact.crm.dto.search.FollowUpSearchCriteria;
 import com.compact.crm.entity.FollowUp;
 import com.compact.crm.service.FollowUpService;
-import com.compact.crm.util.CsvWriter;
+import com.compact.crm.util.TableExport;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
-import org.springframework.http.ContentDisposition;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -87,40 +81,24 @@ public class FollowUpController {
             @ModelAttribute FollowUpSearchCriteria criteria,
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir,
-            @RequestParam(required = false) String ids
+            @RequestParam(required = false) String ids,
+            @RequestParam(required = false) String format
     ) {
 
         List<Long> idList = parseIds(ids);
         List<FollowUp> followUps = followUpService.findForExport(criteria, idList, sortBy, sortDir);
 
-        List<String> headers = List.of(
-                "Lead", "Opportunity", "Employee", "Activity Type", "Status", "Scheduled Date", "Remarks"
+        List<TableExport.Column<FollowUp>> columns = List.of(
+                TableExport.Column.text("Lead", f -> f.getLead() != null ? f.getLead().getCompanyName() : null),
+                TableExport.Column.text("Opportunity", f -> f.getOpportunity() != null ? f.getOpportunity().getTitle() : null),
+                TableExport.Column.text("Employee", f -> f.getEmployee() != null ? f.getEmployee().getName() : null),
+                TableExport.Column.text("Activity Type", f -> f.getActivityType() != null ? f.getActivityType().getName() : null),
+                TableExport.Column.text("Status", f -> f.getStatus() != null ? f.getStatus().name() : null),
+                TableExport.Column.dateTime("Scheduled Date", FollowUp::getScheduledDate),
+                TableExport.Column.text("Remarks", FollowUp::getRemarks)
         );
 
-        List<List<String>> rows = new ArrayList<>();
-
-        for (FollowUp f : followUps) {
-
-            rows.add(List.of(
-                    f.getLead() != null && f.getLead().getCompanyName() != null ? f.getLead().getCompanyName() : "",
-                    f.getOpportunity() != null && f.getOpportunity().getTitle() != null ? f.getOpportunity().getTitle() : "",
-                    f.getEmployee() != null ? f.getEmployee().getName() : "",
-                    f.getActivityType() != null ? f.getActivityType().getName() : "",
-                    f.getStatus() != null ? f.getStatus().name() : "",
-                    f.getScheduledDate() != null ? f.getScheduledDate().toString() : "",
-                    f.getRemarks() != null ? f.getRemarks() : ""
-            ));
-        }
-
-        String csv = CsvWriter.write(headers, rows);
-        byte[] body = csv.getBytes(StandardCharsets.UTF_8);
-
-        HttpHeaders responseHeaders = new HttpHeaders();
-        responseHeaders.setContentType(MediaType.parseMediaType("text/csv"));
-        responseHeaders.setContentDisposition(
-                ContentDisposition.attachment().filename("followups.csv", StandardCharsets.UTF_8).build());
-
-        return new ResponseEntity<>(body, responseHeaders, HttpStatus.OK);
+        return TableExport.response("followups", format, "Follow-Ups", columns, followUps);
     }
 
     private List<Long> parseIds(String ids) {

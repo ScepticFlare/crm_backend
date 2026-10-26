@@ -63,7 +63,12 @@ public class DashboardService {
         List<Long> opportunityEmployeeIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, OPPORTUNITY_VIEW);
         List<Long> followUpEmployeeIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, FOLLOWUP_VIEW);
 
-        long leadCount = leadRepository.count(LeadSpecifications.ownerIn(leadEmployeeIds));
+        // Active leads only (NEW + VALID not yet converted) - the same set the
+        // Leads page lists, so the card and the page it links to agree.
+        // Invalid and converted leads are counted in the lead category report.
+        long leadCount = leadRepository.count(com.compact.crm.specification.SpecificationUtil.and(java.util.Arrays.asList(
+                LeadSpecifications.ownerIn(leadEmployeeIds),
+                LeadSpecifications.inCategories(com.compact.crm.enums.LeadCategory.ACTIVE))));
         long customerCount = customerRepository.count(CustomerSpecifications.ownerIn(customerEmployeeIds));
         long opportunityCount = opportunityRepository.count(OpportunitySpecifications.ownerIn(opportunityEmployeeIds));
         long followUpCount = followUpRepository.count(com.compact.crm.specification.FollowUpSpecifications.ownerIn(followUpEmployeeIds));

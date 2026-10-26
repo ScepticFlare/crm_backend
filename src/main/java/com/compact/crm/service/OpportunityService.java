@@ -583,8 +583,10 @@ public class OpportunityService {
             OpportunitySearchCriteria criteria, List<Long> ids, String sortBy, String sortDir) {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
-        accessControlService.requirePermission(currentEmployee, OPPORTUNITY_EXPORT);
-        List<Long> employeeIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, OPPORTUNITY_VIEW);
+        // Requires OPPORTUNITY_EXPORT and applies the narrower of the export
+        // and view scopes.
+        List<Long> employeeIds = accessControlService.resolveExportEmployeeIds(
+                currentEmployee, OPPORTUNITY_VIEW, OPPORTUNITY_EXPORT);
 
         Specification<Opportunity> spec = buildSpecification(criteria, employeeIds);
 

@@ -10,19 +10,13 @@ import com.compact.crm.dto.search.OpportunitySearchCriteria;
 import com.compact.crm.entity.Opportunity;
 import com.compact.crm.enums.SalesStageType;
 import com.compact.crm.service.OpportunityService;
-import com.compact.crm.util.CsvWriter;
+import com.compact.crm.util.TableExport;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
-import org.springframework.http.ContentDisposition;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -177,47 +171,37 @@ public class OpportunityController {
         return opportunityService.bulkDeleteOpportunities(request.getIds());
     }
 
+    // XLSX by default (`format=csv` for CSV). Same RBAC scope + filters as the
+    // list; the caller needs OPPORTUNITY_EXPORT and never gets more than their
+    // OPPORTUNITY_VIEW scope (see OpportunityService.findForExport).
     @GetMapping("/export")
     public ResponseEntity<byte[]> exportOpportunities(
             @ModelAttribute OpportunitySearchCriteria criteria,
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir,
-            @RequestParam(required = false) String ids
+            @RequestParam(required = false) String ids,
+            @RequestParam(required = false) String format
     ) {
 
         List<Long> idList = parseIds(ids);
         List<Opportunity> opportunities = opportunityService.findForExport(criteria, idList, sortBy, sortDir);
 
-        List<String> headers = List.of(
-                "Lead Company", "Opportunity Title", "Value", "Expected Closing Date",
-                "Stage", "Assigned Employee", "Created Date"
+        List<TableExport.Column<Opportunity>> columns = List.of(
+                TableExport.Column.text("Lead Company", o -> o.getLead() != null ? o.getLead().getCompanyName() : null),
+                TableExport.Column.text("Contact Person", o -> o.getLead() != null ? o.getLead().getContactPerson() : null),
+                TableExport.Column.text("Phone", o -> o.getLead() != null ? o.getLead().getPhone() : null),
+                TableExport.Column.text("Email", o -> o.getLead() != null ? o.getLead().getEmail() : null),
+                TableExport.Column.text("Opportunity Title", Opportunity::getTitle),
+                TableExport.Column.decimal("Value", Opportunity::getProductValue),
+                TableExport.Column.date("Expected Closing Date", Opportunity::getExpectedClosingDate),
+                TableExport.Column.text("Stage", o -> o.getSalesStage() != null ? o.getSalesStage().getName() : null),
+                TableExport.Column.text("Sub-Status", o -> o.getEffectiveSubStatus() != null ? o.getEffectiveSubStatus().name() : null),
+                TableExport.Column.text("Assigned Employee", o -> o.getLead() != null && o.getLead().getAssignedEmployee() != null
+                        ? o.getLead().getAssignedEmployee().getName() : null),
+                TableExport.Column.dateTime("Created Date", Opportunity::getCreatedAt)
         );
 
-        List<List<String>> rows = new ArrayList<>();
-
-        for (Opportunity o : opportunities) {
-
-            rows.add(List.of(
-                    o.getLead() != null && o.getLead().getCompanyName() != null ? o.getLead().getCompanyName() : "",
-                    o.getTitle() != null ? o.getTitle() : "",
-                    o.getProductValue() != null ? o.getProductValue().toString() : "",
-                    o.getExpectedClosingDate() != null ? o.getExpectedClosingDate().toString() : "",
-                    o.getSalesStage() != null ? o.getSalesStage().getName() : "",
-                    o.getLead() != null && o.getLead().getAssignedEmployee() != null
-                            ? o.getLead().getAssignedEmployee().getName() : "",
-                    o.getCreatedAt() != null ? o.getCreatedAt().toString() : ""
-            ));
-        }
-
-        String csv = CsvWriter.write(headers, rows);
-        byte[] body = csv.getBytes(StandardCharsets.UTF_8);
-
-        HttpHeaders responseHeaders = new HttpHeaders();
-        responseHeaders.setContentType(MediaType.parseMediaType("text/csv"));
-        responseHeaders.setContentDisposition(
-                ContentDisposition.attachment().filename("opportunities.csv", StandardCharsets.UTF_8).build());
-
-        return new ResponseEntity<>(body, responseHeaders, HttpStatus.OK);
+        return TableExport.response("opportunities", format, "Opportunities", columns, opportunities);
     }
 
     private List<Long> parseIds(String ids) {

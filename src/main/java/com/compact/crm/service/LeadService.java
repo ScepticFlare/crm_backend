@@ -17,6 +17,7 @@ import com.compact.crm.entity.Opportunity;
 import com.compact.crm.entity.Product;
 import com.compact.crm.enums.ActivityAction;
 import com.compact.crm.enums.ActivityModule;
+import com.compact.crm.enums.LeadCategory;
 import com.compact.crm.enums.LeadStatus;
 import com.compact.crm.enums.LeadValidity;
 import com.compact.crm.exception.ResourceNotFoundException;
@@ -294,12 +295,32 @@ public class LeadService {
     // and every status-bucket endpoint (which just force criteria.status
     // before calling this) - combinable search + filters + a whitelisted
     // sort + RBAC scope, all folded into one Specification.
+    //
+    // NOT category-restricted: the status-bucket endpoints (/invalid, /lost,
+    // /inactive...) and the report endpoint rely on seeing every category.
+    // The operational Leads page must go through searchActiveLeads instead.
     public Page<Lead> searchLeads(LeadSearchCriteria criteria, int page, int size, String sortBy, String sortDir) {
+        return searchLeadsInCategories(criteria, null, page, size, sortBy, sortDir);
+    }
+
+    // The operational Leads page: only NEW and VALID-but-unconverted leads
+    // (LeadCategory.ACTIVE). Enforced here, in the query itself, AND-ed with
+    // every user-supplied filter - so no filter value, page number or count
+    // can bring an INVALID or converted lead into this list.
+    public Page<Lead> searchActiveLeads(LeadSearchCriteria criteria, int page, int size, String sortBy, String sortDir) {
+        return searchLeadsInCategories(criteria, LeadCategory.ACTIVE, page, size, sortBy, sortDir);
+    }
+
+    // Report view: the same RBAC-scoped, filterable, sortable, paginated list
+    // restricted to the chosen categories (null = all four).
+    public Page<Lead> searchLeadsInCategories(
+            LeadSearchCriteria criteria, Set<LeadCategory> categories,
+            int page, int size, String sortBy, String sortDir) {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
         List<Long> employeeIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, LEAD_VIEW);
 
-        Specification<Lead> spec = buildSpecification(criteria, employeeIds);
+        Specification<Lead> spec = buildSpecification(criteria, employeeIds, categories);
         Sort sort = SortWhitelist.resolve(sortBy, sortDir, SORT_FIELDS, "createdDate");
 
         Page<Lead> result = leadRepository.findAll(spec, PageRequest.of(page, size, sort));
@@ -307,16 +328,55 @@ public class LeadService {
         return result;
     }
 
-    // Same filter/RBAC scoping as searchLeads, but unpaged (capped) and
-    // optionally restricted to an explicit id set - backs CSV export,
-    // including "export only the selected rows".
-    public List<Lead> findForExport(LeadSearchCriteria criteria, List<Long> ids, String sortBy, String sortDir) {
+    // How many leads (within the caller's RBAC scope and the given
+    // non-category filters) fall in each category. The four categories are
+    // mutually exclusive, so `total` is their exact sum.
+    public Map<String, Long> countByCategory(LeadSearchCriteria criteria) {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
-        accessControlService.requirePermission(currentEmployee, LEAD_EXPORT);
         List<Long> employeeIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, LEAD_VIEW);
 
-        Specification<Lead> spec = buildSpecification(criteria, employeeIds);
+        Map<String, Long> counts = new java.util.LinkedHashMap<>();
+        long total = 0;
+
+        for (LeadCategory category : LeadCategory.values()) {
+
+            long n = leadRepository.count(buildSpecification(criteria, employeeIds, java.util.EnumSet.of(category)));
+            counts.put(category.name(), n);
+            total += n;
+        }
+
+        counts.put("TOTAL", total);
+
+        return counts;
+    }
+
+    // Number of operational (active) leads in the caller's scope - what the
+    // Leads page total and the dashboard card show.
+    public long countActiveLeads(List<Long> employeeIds) {
+        return leadRepository.count(SpecificationUtil.and(java.util.Arrays.asList(
+                LeadSpecifications.ownerIn(employeeIds),
+                LeadSpecifications.inCategories(LeadCategory.ACTIVE))));
+    }
+
+    // Default export (and "export selected") is the operational list.
+    public List<Lead> findForExport(LeadSearchCriteria criteria, List<Long> ids, String sortBy, String sortDir) {
+        return findForExport(criteria, ids, sortBy, sortDir, LeadCategory.ACTIVE);
+    }
+
+    // Same filter/RBAC scoping as searchLeads, but unpaged (capped) and
+    // optionally restricted to an explicit id set - backs the export,
+    // including "export only the selected rows". `categories` null = every
+    // category (history/reporting); the scope is the narrower of the
+    // caller's LEAD_VIEW and LEAD_EXPORT grants.
+    public List<Lead> findForExport(
+            LeadSearchCriteria criteria, List<Long> ids, String sortBy, String sortDir,
+            Set<LeadCategory> categories) {
+
+        Employee currentEmployee = currentUserService.getCurrentEmployee();
+        List<Long> employeeIds = accessControlService.resolveExportEmployeeIds(currentEmployee, LEAD_VIEW, LEAD_EXPORT);
+
+        Specification<Lead> spec = buildSpecification(criteria, employeeIds, categories);
 
         if (ids != null && !ids.isEmpty()) {
             Specification<Lead> idSpec = LeadSpecifications.hasIds(ids);
@@ -328,14 +388,33 @@ public class LeadService {
 
         List<Lead> leads = leadRepository.findAll(spec, pageable).getContent();
 
+        markConverted(leads);
+
         activityLogService.log(
                 currentEmployee,
                 ActivityModule.LEAD, ActivityAction.EXPORT,
                 null, null,
                 "Exported " + leads.size() + " lead(s)"
+                        + (categories == null ? " (all categories)" : " (" + categories + ")")
         );
 
         return leads;
+    }
+
+    // Sets only the `converted` flag (one query per 1,000 leads) - enough to
+    // label a lead's category in an export without the heavier UI decoration.
+    private void markConverted(List<Lead> leads) {
+
+        List<Long> ids = leads.stream().map(Lead::getId).filter(Objects::nonNull).toList();
+
+        Set<Long> converted = new HashSet<>();
+
+        for (int i = 0; i < ids.size(); i += 1000) {
+            converted.addAll(opportunityRepository.findLeadIdsWithOpportunity(
+                    ids.subList(i, Math.min(ids.size(), i + 1000))));
+        }
+
+        leads.forEach(lead -> lead.setConverted(converted.contains(lead.getId())));
     }
 
     // Deletes only the requested ids the caller is authorized (LEAD_DELETE)
@@ -380,6 +459,11 @@ public class LeadService {
     }
 
     private Specification<Lead> buildSpecification(LeadSearchCriteria criteria, List<Long> employeeIds) {
+        return buildSpecification(criteria, employeeIds, null);
+    }
+
+    private Specification<Lead> buildSpecification(
+            LeadSearchCriteria criteria, List<Long> employeeIds, Set<LeadCategory> categories) {
 
         LocalDateTime createdFrom = criteria.getCreatedFrom() != null
                 ? criteria.getCreatedFrom().atStartOfDay() : null;
@@ -390,6 +474,7 @@ public class LeadService {
         return SpecificationUtil.and(java.util.Arrays.asList(
                 LeadSpecifications.fetchAssociations(),
                 LeadSpecifications.ownerIn(employeeIds),
+                LeadSpecifications.inCategories(categories),
                 LeadSpecifications.search(criteria.getSearch()),
                 LeadSpecifications.hasStatus(criteria.getStatus()),
                 LeadSpecifications.inStatusGroup(criteria.getStatusGroup()),

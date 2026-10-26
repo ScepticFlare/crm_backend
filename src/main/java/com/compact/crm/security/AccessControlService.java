@@ -137,6 +137,32 @@ public class AccessControlService {
     }
 
     /**
+     * Visible-owner filter for an EXPORT: requires the export permission and
+     * applies the NARROWER of the export grant's and the view grant's scope,
+     * so an export grant can never expose records the caller cannot already
+     * view (e.g. export granted at ALL but view only at OWN stays OWN).
+     * Same return convention as {@link #resolveVisibleEmployeeIds}.
+     */
+    public List<Long> resolveExportEmployeeIds(Employee employee, String viewCode, String exportCode) {
+
+        Scope exportScope = resolveScope(employee, exportCode);
+        Scope viewScope = resolveScope(employee, viewCode);
+
+        if (exportScope == null || viewScope == null) {
+            throw new AccessDeniedException(NO_PERMISSION);
+        }
+
+        // Scope is declared OWN < TEAM < ALL.
+        Scope effective = exportScope.ordinal() <= viewScope.ordinal() ? exportScope : viewScope;
+
+        return switch (effective) {
+            case ALL -> null;
+            case TEAM -> teamMemberIds(employee);
+            case OWN -> List.of(employee.getId());
+        };
+    }
+
+    /**
      * Single-record check: does the employee's grant for this permission
      * cover a record owned by {@code ownerEmployeeId}. Throws
      * AccessDeniedException otherwise - including when the role has no
