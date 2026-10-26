@@ -58,7 +58,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Lead lifecycle categories on a real H2 database with the real services:
  * what the operational Leads page lists, that invalid / converted leads stay
  * reportable, category counts, and export authorization / data scope for the
- * MARKETING role.
+ * export permission for ordinary employees.
  */
 @DataJpaTest
 @Import({LeadService.class, OpportunityService.class, FollowUpService.class, CustomerService.class,
@@ -83,22 +83,22 @@ class LeadCategoryIntegrationTest {
     private Employee admin;
     private Employee manager;
     private Employee employee;
-    private Employee marketing;
-    private Employee otherMarketing;
+    private Employee staff;
+    private Employee otherStaff;
     private Industry industry;
     private LeadSourceMaster source;
     private ActivityType call;
 
     private final Map<String, Permission> permissions = new HashMap<>();
 
-    // One lead of every category, all owned by `marketing` unless noted.
+    // One lead of every category, all owned by `staff` unless noted.
     private Lead newLead;
     private Lead validLead;
     private Lead invalidLead;
     private Lead convertedLead;
     private Lead legacyLead;       // stored WON, no opportunity -> NEW
     private Lead nullStatusLead;   // no stored status           -> NEW
-    private Lead othersNewLead;    // owned by otherMarketing
+    private Lead othersNewLead;    // owned by otherStaff
 
     @BeforeEach
     void setUp() {
@@ -106,7 +106,6 @@ class LeadCategoryIntegrationTest {
         Role adminRole = roleRepository.save(Role.builder().name("ADMIN").rank(100).build());
         Role managerRole = roleRepository.save(Role.builder().name("MANAGER").rank(50).build());
         Role employeeRole = roleRepository.save(Role.builder().name("EMPLOYEE").rank(10).build());
-        Role marketingRole = roleRepository.save(Role.builder().name("MARKETING").rank(10).build());
 
         for (String code : List.of(LEAD_MANAGE, LEAD_VIEW, OPPORTUNITY_MANAGE, OPPORTUNITY_VIEW,
                 AccessControlService.FOLLOWUP_VIEW, AccessControlService.FOLLOWUP_MANAGE,
@@ -114,20 +113,21 @@ class LeadCategoryIntegrationTest {
             grant(adminRole, code, Scope.ALL);
             grant(managerRole, code, Scope.TEAM);
             grant(employeeRole, code, Scope.OWN);
-            grant(marketingRole, code, Scope.OWN);
         }
 
-        // Export: ADMIN (ALL) and MARKETING (OWN) only - exactly the V5 + V11 shape.
+        // Export: every role, at the same scope as its view grant - the V5 + V11 shape.
         grant(adminRole, LEAD_EXPORT, Scope.ALL);
         grant(adminRole, OPPORTUNITY_EXPORT, Scope.ALL);
-        grant(marketingRole, LEAD_EXPORT, Scope.OWN);
-        grant(marketingRole, OPPORTUNITY_EXPORT, Scope.OWN);
+        grant(managerRole, LEAD_EXPORT, Scope.TEAM);
+        grant(managerRole, OPPORTUNITY_EXPORT, Scope.TEAM);
+        grant(employeeRole, LEAD_EXPORT, Scope.OWN);
+        grant(employeeRole, OPPORTUNITY_EXPORT, Scope.OWN);
 
         admin = employee("Admin", "a@t.com", "9500000001", adminRole, null);
         manager = employee("Manager", "m@t.com", "9500000002", managerRole, null);
         employee = employee("Employee", "e@t.com", "9500000003", employeeRole, manager);
-        marketing = employee("Marketing", "mk@t.com", "9500000004", marketingRole, null);
-        otherMarketing = employee("Marketing2", "mk2@t.com", "9500000005", marketingRole, null);
+        staff = employee("Staff", "mk@t.com", "9500000004", employeeRole, null);
+        otherStaff = employee("Staff2", "mk2@t.com", "9500000005", employeeRole, null);
 
         industry = industryRepository.save(Industry.builder().name("Manufacturing").build());
         source = leadSourceMasterRepository.save(LeadSourceMaster.builder().name("Referral").build());
@@ -137,20 +137,20 @@ class LeadCategoryIntegrationTest {
 
         authenticateAs(admin);
 
-        newLead = leadService.createLead(request("New Co", LeadStatus.NEW, marketing));
-        validLead = leadService.createLead(request("Valid Co", LeadStatus.VALID, marketing));
+        newLead = leadService.createLead(request("New Co", LeadStatus.NEW, staff));
+        validLead = leadService.createLead(request("Valid Co", LeadStatus.VALID, staff));
 
-        LeadRequest invalid = request("Invalid Co", LeadStatus.INVALID, marketing);
+        LeadRequest invalid = request("Invalid Co", LeadStatus.INVALID, staff);
         invalid.setInvalidReason("Wrong number");
         invalidLead = leadService.createLead(invalid);
 
-        convertedLead = leadService.createLead(request("Converted Co", LeadStatus.VALID, marketing));
+        convertedLead = leadService.createLead(request("Converted Co", LeadStatus.VALID, staff));
         opportunityService.convertLeadToOpportunity(convertedLead.getId(), oppRequest());
 
-        legacyLead = stored("Legacy Co", LeadStatus.WON, marketing);
-        nullStatusLead = stored("Null Co", null, marketing);
+        legacyLead = stored("Legacy Co", LeadStatus.WON, staff);
+        nullStatusLead = stored("Null Co", null, staff);
 
-        othersNewLead = leadService.createLead(request("Others Co", LeadStatus.NEW, otherMarketing));
+        othersNewLead = leadService.createLead(request("Others Co", LeadStatus.NEW, otherStaff));
     }
 
     // ===================================================== the operational Leads page
@@ -211,7 +211,7 @@ class LeadCategoryIntegrationTest {
         assertThat(names(leadService.searchActiveLeads(new LeadSearchCriteria(), 0, 50, null, null)))
                 .contains("New Co");
 
-        LeadRequest toInvalid = request("New Co", LeadStatus.INVALID, marketing);
+        LeadRequest toInvalid = request("New Co", LeadStatus.INVALID, staff);
         toInvalid.setInvalidReason("Not a real company");
         leadService.updateLead(newLead.getId(), toInvalid);
 
@@ -285,7 +285,7 @@ class LeadCategoryIntegrationTest {
 
         // Historical data can contain both; INVALID wins (same precedence as
         // LeadWorkflow.effectiveStatus) so the lead is never double-counted.
-        LeadRequest toInvalid = request("Converted Co", LeadStatus.INVALID, marketing);
+        LeadRequest toInvalid = request("Converted Co", LeadStatus.INVALID, staff);
         toInvalid.setInvalidReason("Turned out to be spam");
         leadService.updateLead(convertedLead.getId(), toInvalid);
 
@@ -297,11 +297,11 @@ class LeadCategoryIntegrationTest {
     @Test
     void report_countsRespectTheCallersScope() {
 
-        authenticateAs(marketing);
+        authenticateAs(staff);
 
         Map<String, Long> counts = leadService.countByCategory(new LeadSearchCriteria());
 
-        // marketing owns 6 of the 7 leads (not "Others Co")
+        // staff owns 6 of the 7 leads (not "Others Co")
         assertThat(counts).containsEntry("TOTAL", 6L).containsEntry("NEW", 3L);
         assertThat(names(leadService.searchLeadsInCategories(new LeadSearchCriteria(), null, 0, 50, null, null)))
                 .doesNotContain("Others Co");
@@ -323,7 +323,7 @@ class LeadCategoryIntegrationTest {
 
         assertThat(dashboardService.getStats().getLeads()).isEqualTo(5);
 
-        authenticateAs(marketing);
+        authenticateAs(staff);
 
         assertThat(dashboardService.getStats().getLeads()).isEqualTo(4);
     }
@@ -364,9 +364,9 @@ class LeadCategoryIntegrationTest {
     }
 
     @Test
-    void export_marketingGetsOnlyTheirOwnRecords_inEveryCategory() {
+    void export_employeeGetsOnlyTheirOwnRecords_inEveryCategory() {
 
-        authenticateAs(marketing);
+        authenticateAs(staff);
 
         assertThat(exportNames(null))
                 .containsExactlyInAnyOrder("New Co", "Valid Co", "Invalid Co", "Converted Co", "Legacy Co", "Null Co")
@@ -378,7 +378,7 @@ class LeadCategoryIntegrationTest {
     @Test
     void export_aCallerCannotWidenScopeByIdsOrAssigneeFilter() {
 
-        authenticateAs(marketing);
+        authenticateAs(staff);
 
         // Asking for the other marketer's lead by id returns nothing for it.
         List<Lead> byId = leadService.findForExport(
@@ -388,21 +388,41 @@ class LeadCategoryIntegrationTest {
 
         // Filtering on someone else's employee id yields nothing.
         LeadSearchCriteria other = new LeadSearchCriteria();
-        other.setAssignedEmployeeId(otherMarketing.getId());
+        other.setAssignedEmployeeId(otherStaff.getId());
 
         assertThat(leadService.findForExport(other, null, null, null, null)).isEmpty();
     }
 
     @Test
-    void export_aPlainEmployeeAndAManagerAreDenied() {
+    void export_everyRoleMayExport_butOnlyWithinItsOwnScope() {
 
+        // a lead owned by the manager's direct report
+        leadService.createLead(request("Reports Co", LeadStatus.NEW, employee));
+
+        // a plain EMPLOYEE (no role change, no special permission): own records only
         authenticateAs(employee);
-        assertThatThrownBy(() -> leadService.findForExport(new LeadSearchCriteria(), null, null, null, null))
-                .isInstanceOf(AccessDeniedException.class);
-        assertThatThrownBy(() -> opportunityService.findForExport(new OpportunitySearchCriteria(), null, null, null))
-                .isInstanceOf(AccessDeniedException.class);
+        assertThat(exportNames(null)).containsExactly("Reports Co");
+        assertThat(opportunityService.findForExport(new OpportunitySearchCriteria(), null, null, null)).isEmpty();
 
+        // a MANAGER: self + direct reports, never another team's records
         authenticateAs(manager);
+        assertThat(exportNames(null)).containsExactly("Reports Co");
+
+        // an ADMIN: everything
+        authenticateAs(admin);
+        assertThat(exportNames(null)).hasSize(8);
+    }
+
+    @Test
+    void export_aRoleWithoutTheExportGrantIsStillDenied_enforcedInTheBackend() {
+
+        Role none = roleRepository.save(Role.builder().name("NOEXPORT").rank(10).build());
+        grant(none, LEAD_VIEW, Scope.ALL);
+        grant(none, OPPORTUNITY_VIEW, Scope.ALL);
+        Employee user = employee("NoExport", "ne@t.com", "9500000010", none, null);
+
+        authenticateAs(user);
+
         assertThatThrownBy(() -> leadService.findForExport(new LeadSearchCriteria(), null, null, null, null))
                 .isInstanceOf(AccessDeniedException.class);
         assertThatThrownBy(() -> opportunityService.findForExport(new OpportunitySearchCriteria(), null, null, null))
@@ -425,16 +445,16 @@ class LeadCategoryIntegrationTest {
     }
 
     @Test
-    void opportunityExport_marketingSeesOnlyOpportunitiesOnTheirLeads() {
+    void opportunityExport_staffSeesOnlyOpportunitiesOnTheirLeads() {
 
         // another marketer's converted lead
-        Lead others = leadService.createLead(request("Others Valid", LeadStatus.VALID, otherMarketing));
+        Lead others = leadService.createLead(request("Others Valid", LeadStatus.VALID, otherStaff));
         opportunityService.convertLeadToOpportunity(others.getId(), oppRequest());
 
         authenticateAs(admin);
         assertThat(opportunityService.findForExport(new OpportunitySearchCriteria(), null, null, null)).hasSize(2);
 
-        authenticateAs(marketing);
+        authenticateAs(staff);
         List<Opportunity> mine = opportunityService.findForExport(new OpportunitySearchCriteria(), null, null, null);
 
         assertThat(mine).hasSize(1);
@@ -442,9 +462,9 @@ class LeadCategoryIntegrationTest {
     }
 
     @Test
-    void marketing_canViewAndExportButStillCannotManageAnotherUsersLead() {
+    void staff_canViewAndExportButStillCannotManageAnotherUsersLead() {
 
-        authenticateAs(marketing);
+        authenticateAs(staff);
 
         assertThatThrownBy(() -> leadService.getLeadById(othersNewLead.getId()))
                 .isInstanceOf(AccessDeniedException.class);
