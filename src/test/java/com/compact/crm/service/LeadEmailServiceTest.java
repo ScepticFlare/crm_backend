@@ -123,6 +123,50 @@ class LeadEmailServiceTest {
                 eq(10L), eq("ABC Industries"), any());
     }
 
+    // The AMC template ships with a [[...]] section an admin must complete.
+    // The single-recipient flow must refuse to send it to a customer.
+    @Test
+    void sendIndividual_withUnfinishedAdminSection_rejectedBeforeSending() {
+
+        grant(employeeRole, EMAIL_SEND, Scope.OWN);
+        when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
+
+        Lead lead = leadOwnedBy(40L, employeeA, "rajesh@acme.com");
+        when(leadRepository.findById(40L)).thenReturn(Optional.of(lead));
+
+        SendLeadEmailRequest request = new SendLeadEmailRequest(
+                EmailTemplateType.AMC, null, "AMC",
+                "Dear Rajesh, [[ADMIN: describe the AMC offer here]] Regards", List.of());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> leadEmailService.sendIndividual(40L, request))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("[[...]]");
+
+        verify(brevoEmailClient, org.mockito.Mockito.never()).send(any(), any(), any(), any());
+    }
+
+    // A completed AMC email goes through the unchanged single-recipient path
+    // and is labelled as an AMC email in the activity log.
+    @Test
+    void sendIndividual_amcTemplateType_sendsAndLogsAsAmc() {
+
+        grant(employeeRole, EMAIL_SEND, Scope.OWN);
+        when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
+
+        Lead lead = leadOwnedBy(41L, employeeA, "rajesh@acme.com");
+        when(leadRepository.findById(41L)).thenReturn(Optional.of(lead));
+
+        SendLeadEmailRequest request = new SendLeadEmailRequest(
+                EmailTemplateType.AMC, null, "AMC", "Dear Rajesh, our AMC offer is attached.", List.of());
+
+        leadEmailService.sendIndividual(41L, request);
+
+        verify(brevoEmailClient).send(eq("rajesh@acme.com"), eq("AMC"), any(), any());
+        verify(activityLogService).log(
+                eq(employeeA), eq(ActivityModule.LEAD), eq(ActivityAction.EMAIL_SENT),
+                eq(41L), eq("ABC Industries"), org.mockito.ArgumentMatchers.contains("AMC email"));
+    }
+
     // Multiple attachments: each selected Document's bytes (loaded through
     // DocumentService, which delegates to DocumentStorageService - local
     // disk or Supabase, this test doesn't care which) must reach

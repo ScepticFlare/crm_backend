@@ -82,6 +82,14 @@ public class LeadEmailService {
         Lead lead = getAuthorizedLead(leadId);
         validateHasEmail(lead);
 
+        // Templates may carry a [[...]] section an admin still has to complete
+        // (the AMC template ships with one). Never send that to a customer.
+        if (EmailPlaceholderRenderer.hasAdminMarker(request.getSubject())
+                || EmailPlaceholderRenderer.hasAdminMarker(request.getBody())) {
+            throw new IllegalArgumentException(
+                    "The message still contains an unfinished [[...]] section. Complete or remove it before sending.");
+        }
+
         List<Document> documents = resolveDocuments(request.getDocumentIds());
 
         sendMail(lead.getEmail(), request.getSubject(), request.getBody(), documents);
@@ -293,9 +301,11 @@ public class LeadEmailService {
     }
 
     private String describeEmailType(EmailTemplateType type) {
-        return type == EmailTemplateType.PRODUCT_BROCHURE
-                ? "Product brochure email"
-                : "Keep-in-touch email";
+        return switch (type) {
+            case PRODUCT_BROCHURE -> "Product brochure email";
+            case AMC -> "AMC email";
+            default -> "Keep-in-touch email";
+        };
     }
 
     // {{contactPerson}} / {{companyName}} / {{interestedProduct}} - a

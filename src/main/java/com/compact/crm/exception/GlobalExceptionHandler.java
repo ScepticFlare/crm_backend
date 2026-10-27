@@ -122,6 +122,23 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(error, HttpStatus.BAD_REQUEST);
     }
 
+    // A body that is missing, not valid JSON, or has a value of the wrong type
+    // (e.g. an unknown enum constant) is the caller's mistake: 400, not the 500
+    // the catch-all below would otherwise produce.
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiError> handleUnreadableBody(
+            org.springframework.http.converter.HttpMessageNotReadableException ex) {
+
+        ApiError error = new ApiError(
+                LocalDateTime.now().toString(),
+                HttpStatus.BAD_REQUEST.value(),
+                HttpStatus.BAD_REQUEST.getReasonPhrase(),
+                "The request body is missing or malformed."
+        );
+
+        return new ResponseEntity<>(error, HttpStatus.BAD_REQUEST);
+    }
+
     @ExceptionHandler(TooManyRequestsException.class)
     public ResponseEntity<ApiError> handleTooManyRequests(TooManyRequestsException ex) {
 

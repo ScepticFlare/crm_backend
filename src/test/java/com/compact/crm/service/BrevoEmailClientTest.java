@@ -198,4 +198,66 @@ class BrevoEmailClientTest {
         server.verify();
     }
 
+
+    // ---------- trySend: ACCEPTED / FAILED (definitely not sent) / UNKNOWN (maybe sent) ----------
+
+    @Test
+    void trySend_2xx_isAccepted() {
+
+        init();
+        server.expect(requestTo(BASE_URL + "/smtp/email")).andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+        var outcome = client().trySend("a@b.example", "S", "B", List.of());
+
+        assertThat(outcome.result()).isEqualTo(BrevoEmailClient.Result.ACCEPTED);
+    }
+
+    @Test
+    void trySend_4xx_isAConfirmedFailure_withTheProvidersSanitizedMessage() {
+
+        init();
+        server.expect(requestTo(BASE_URL + "/smtp/email")).andRespond(withStatus(HttpStatus.UNAUTHORIZED)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"message\":\"We have detected you are using an unrecognised IP address 1.2.3.4.\",\"code\":\"unauthorized\"}"));
+
+        var outcome = client().trySend("a@b.example", "S", "SECRET-BODY", List.of());
+
+        assertThat(outcome.result()).isEqualTo(BrevoEmailClient.Result.FAILED);
+        assertThat(outcome.httpStatus()).isEqualTo(401);
+        assertThat(outcome.detail()).startsWith("HTTP 401: We have detected you are using an unrecognised IP address");
+        assertThat(outcome.detail()).doesNotContain("test-brevo-key").doesNotContain("SECRET-BODY");
+    }
+
+    @Test
+    void trySend_5xx_requestTimeout_and_connectionErrors_areUnknown_notFailed() {
+
+        init();
+        server.expect(requestTo(BASE_URL + "/smtp/email")).andRespond(withStatus(HttpStatus.BAD_GATEWAY));
+        assertThat(client().trySend("a@b.example", "S", "B", List.of()).result())
+                .isEqualTo(BrevoEmailClient.Result.UNKNOWN);
+
+        init();
+        server.expect(requestTo(BASE_URL + "/smtp/email")).andRespond(withStatus(HttpStatus.REQUEST_TIMEOUT));
+        assertThat(client().trySend("a@b.example", "S", "B", List.of()).result())
+                .isEqualTo(BrevoEmailClient.Result.UNKNOWN);
+
+        init();
+        server.expect(requestTo(BASE_URL + "/smtp/email"))
+                .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators
+                        .withException(new java.io.IOException("Read timed out")));
+        var outcome = client().trySend("a@b.example", "S", "B", List.of());
+        assertThat(outcome.result()).isEqualTo(BrevoEmailClient.Result.UNKNOWN);
+        assertThat(outcome.httpStatus()).isNull();
+    }
+
+    @Test
+    void send_stillThrowsTheGenericError_forEveryFailure_asBefore() {
+
+        init();
+        server.expect(requestTo(BASE_URL + "/smtp/email")).andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+
+        assertThatThrownBy(() -> client().send("a@b.example", "S", "B", List.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Unable to send the email. Please try again.");
+    }
 }

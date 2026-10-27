@@ -6,12 +6,15 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.List;
 
@@ -48,6 +51,7 @@ public class BrevoEmailClient {
             @Value("${crm.debug.brevo-account-check-on-startup:false}") boolean checkAccountOnStartup
     ) {
         this(RestClient.builder()
+                .requestFactory(timeoutFactory())
                 .baseUrl("https://api.brevo.com/v3")
                 .defaultHeader("api-key", sanitizeApiKey(apiKey))
                 .defaultHeader("Content-Type", MediaType.APPLICATION_JSON_VALUE)
@@ -63,6 +67,17 @@ public class BrevoEmailClient {
     // "Key not found" rather than anything that points at whitespace.
     // Package-private and pure so it's directly unit-testable without
     // needing a live Brevo call.
+    // Without these the JDK client waits forever on a stalled provider, which
+    // for a bulk send would hang the request and leave the outcome unknowable.
+    // A read timeout is classified UNKNOWN (the provider may still have sent it).
+    private static JdkClientHttpRequestFactory timeoutFactory() {
+
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(
+                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build());
+        factory.setReadTimeout(Duration.ofSeconds(20));
+        return factory;
+    }
+
     static String sanitizeApiKey(String apiKey) {
         return apiKey == null ? "" : apiKey.trim();
     }
@@ -158,6 +173,80 @@ public class BrevoEmailClient {
     // (MimeMessageHelper.setText(body, false) before this change).
     public void send(String to, String subject, String body, List<EmailAttachment> attachments) {
 
+        try {
+
+            post(to, subject, body, attachments);
+
+        } catch (RestClientException e) {
+            // Never log the request itself - it carries the api-key header
+            // and base64 attachment content. e.getMessage() from a
+            // RestClientException is Brevo's HTTP status/reason, not the
+            // request body.
+            log.warn("Brevo email send failed: {}", e.getMessage());
+            throw new IllegalStateException("Unable to send the email. Please try again.", e);
+        }
+    }
+
+    // What a send attempt tells us, for callers (bulk email) that must tell
+    // "definitely not sent" from "maybe sent":
+    //   ACCEPTED - 2xx from Brevo (accepted for delivery, not proof of delivery)
+    //   FAILED   - Brevo answered with a 4xx (other than 408): it did not send it
+    //   UNKNOWN  - 5xx, 408, timeout or I/O error: it may or may not have sent it
+    public enum Result { ACCEPTED, FAILED, UNKNOWN }
+
+    public record SendOutcome(Result result, Integer httpStatus, String detail) {
+    }
+
+    public SendOutcome trySend(String to, String subject, String body, List<EmailAttachment> attachments) {
+
+        try {
+
+            post(to, subject, body, attachments);
+            return new SendOutcome(Result.ACCEPTED, null, null);
+
+        } catch (RestClientResponseException e) {
+
+            int status = e.getStatusCode().value();
+            String detail = describe(status, e.getResponseBodyAsString());
+            boolean definitive = e.getStatusCode().is4xxClientError() && status != 408;
+
+            log.warn("Brevo email send {}: {}", definitive ? "rejected" : "outcome unknown", detail);
+
+            return new SendOutcome(definitive ? Result.FAILED : Result.UNKNOWN, status, detail);
+
+        } catch (RestClientException e) {
+
+            // Timeout / connection reset: the request may have reached Brevo.
+            log.warn("Brevo email send outcome unknown: {}", e.getClass().getSimpleName());
+
+            return new SendOutcome(Result.UNKNOWN, null,
+                    "No usable response from the email provider (" + e.getClass().getSimpleName() + ")");
+        }
+    }
+
+    private static final java.util.regex.Pattern JSON_MESSAGE =
+            java.util.regex.Pattern.compile("\"message\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
+
+    // Sanitized provider error: HTTP status plus Brevo's own short message
+    // (never the request, headers or body of what we sent).
+    static String describe(int status, String responseBody) {
+
+        String message = "";
+
+        if (responseBody != null) {
+            java.util.regex.Matcher m = JSON_MESSAGE.matcher(responseBody);
+            if (m.find()) {
+                message = m.group(1).replace("\\\"", "\"");
+            }
+        }
+
+        String text = "HTTP " + status + (message.isBlank() ? "" : ": " + message);
+
+        return text.length() > 300 ? text.substring(0, 300) : text;
+    }
+
+    private void post(String to, String subject, String body, List<EmailAttachment> attachments) {
+
         Request request = new Request(
                 new Sender(fromName, fromAddress),
                 List.of(new Recipient(to)),
@@ -170,20 +259,11 @@ public class BrevoEmailClient {
                         .toList()
         );
 
-        try {
-            restClient.post()
-                    .uri(SEND_URI)
-                    .body(request)
-                    .retrieve()
-                    .toBodilessEntity();
-        } catch (RestClientException e) {
-            // Never log the request itself - it carries the api-key header
-            // and base64 attachment content. e.getMessage() from a
-            // RestClientException is Brevo's HTTP status/reason, not the
-            // request body.
-            log.warn("Brevo email send failed: {}", e.getMessage());
-            throw new IllegalStateException("Unable to send the email. Please try again.", e);
-        }
+        restClient.post()
+                .uri(SEND_URI)
+                .body(request)
+                .retrieve()
+                .toBodilessEntity();
     }
 
     @JsonInclude(JsonInclude.Include.NON_EMPTY)

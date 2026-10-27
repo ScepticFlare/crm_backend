@@ -8,5 +8,8 @@ package com.compact.crm.enums;
 // guaranteed to stay in lockstep.
 public enum EmailTemplateType {
     PRODUCT_BROCHURE,
-    KEEP_IN_TOUCH
+    KEEP_IN_TOUCH,
+    // Annual Maintenance Contract outreach. A normal admin-managed template
+    // type - no AMC-specific behaviour exists anywhere in the code.
+    AMC
 }
