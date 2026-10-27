@@ -139,6 +139,21 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(error, HttpStatus.BAD_REQUEST);
     }
 
+    // A required query parameter that was not sent is the caller's mistake: 400.
+    @ExceptionHandler(org.springframework.web.bind.MissingServletRequestParameterException.class)
+    public ResponseEntity<ApiError> handleMissingParameter(
+            org.springframework.web.bind.MissingServletRequestParameterException ex) {
+
+        ApiError error = new ApiError(
+                LocalDateTime.now().toString(),
+                HttpStatus.BAD_REQUEST.value(),
+                HttpStatus.BAD_REQUEST.getReasonPhrase(),
+                "The required parameter '" + ex.getParameterName() + "' is missing."
+        );
+
+        return new ResponseEntity<>(error, HttpStatus.BAD_REQUEST);
+    }
+
     @ExceptionHandler(TooManyRequestsException.class)
     public ResponseEntity<ApiError> handleTooManyRequests(TooManyRequestsException ex) {
 

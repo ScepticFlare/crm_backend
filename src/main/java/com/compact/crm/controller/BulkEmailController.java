@@ -1,6 +1,7 @@
 package com.compact.crm.controller;
 
 import com.compact.crm.dto.request.BulkEmailRequest;
+import com.compact.crm.dto.response.BulkEmailBatchResponse;
 import com.compact.crm.dto.response.BulkEmailPreviewResponse;
 import com.compact.crm.dto.response.BulkEmailSendResponse;
 import com.compact.crm.service.BulkEmailService;
@@ -31,14 +32,24 @@ public class BulkEmailController {
         return bulkEmailService.preview(request);
     }
 
-    // Sends one chunk (at most 10 records) of a batch. Safe to repeat with the
-    // same batchId: recipients already handled are reported, never re-sent.
+    // Creates a batch. The SERVER issues the batch id and pins the owner, target,
+    // template, message and the whole recipient list (at most 100 records).
+    @PostMapping("/batches")
+    public BulkEmailBatchResponse createBatch(@Valid @RequestBody BulkEmailRequest request) {
+        return bulkEmailService.createBatch(request);
+    }
+
+    // Sends one chunk (at most 10 records) of a batch the caller owns. The chunk
+    // must be a subset of the batch's recipients and always sends the batch's own
+    // message. Safe to repeat: recipients already handled are reported, never re-sent.
     @PostMapping("/send")
     public BulkEmailSendResponse send(@Valid @RequestBody BulkEmailRequest request) {
         return bulkEmailService.send(request);
     }
 
-    // What has happened to a batch so far (reload-safe results view).
+    // The whole batch as it stands: every originally selected record with its
+    // recorded outcome (reload-safe; also the reconciliation point after a lost
+    // or ambiguous response).
     @GetMapping("/batches/{batchId}")
     public BulkEmailSendResponse batch(@PathVariable String batchId) {
         return bulkEmailService.results(batchId);

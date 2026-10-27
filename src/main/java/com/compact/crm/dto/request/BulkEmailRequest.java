@@ -2,7 +2,6 @@ package com.compact.crm.dto.request;
 
 import com.compact.crm.enums.BulkEmailTarget;
 import jakarta.validation.constraints.NotEmpty;
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -11,28 +10,29 @@ import lombok.Setter;
 
 import java.util.List;
 
-// Body for POST /api/bulk-email/preview and /send.
+// Body for POST /api/bulk-email/preview, /batches and /send.
 //
 // ids are only CANDIDATES: every one is re-loaded and re-authorized server-side
 // against the caller's own login (EMAIL_SEND scope), so an id the caller cannot
 // access simply comes back excluded. Nothing here (no employee id, owner filter
 // or role) can widen what the caller may email.
 //
-// subject/body are the batch's own editable copy with placeholders still in
-// them (each recipient is rendered server-side); the shared template is never
-// modified. Both may be blank for /preview (recipient check only) and are
-// required for /send. templateId is informational (which approved template the
-// batch started from) and must reference an active template when given.
+// /preview and /batches: subject/body are the batch's own editable copy with
+// placeholders still in them (each recipient is rendered server-side); the shared
+// template is never modified. /preview may leave them blank (recipient check
+// only); /batches requires them. templateId must reference an active template.
 //
-// batchId is chosen by the client once per batch and reused for every chunk and
-// retry: it is what makes a repeated submission idempotent.
+// /send: only batchId (issued by the server by POST /batches) and ids (a chunk of
+// at most 10, which must be a subset of the batch's own recipient list) are
+// needed. target/subject/body/templateId are optional and, when present, must be
+// IDENTICAL to what the batch was created with - the server always sends the
+// batch's stored content, never what a later request says.
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
 public class BulkEmailRequest {
 
-    @NotNull(message = "Target (LEAD or OPPORTUNITY) is required")
     private BulkEmailTarget target;
 
     @NotEmpty(message = "Select at least one record")
@@ -47,6 +47,7 @@ public class BulkEmailRequest {
 
     private Long templateId;
 
+    // Server-issued id of an existing batch (/send only).
     @Size(max = 64, message = "Invalid batch id")
     private String batchId;
 }

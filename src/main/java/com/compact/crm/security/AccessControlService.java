@@ -75,6 +75,8 @@ public class AccessControlService {
     // scope), same shape as LEAD_DELETE/LEAD_EXPORT above.
     public static final String EMAIL_SEND = "EMAIL_SEND";
     public static final String EMAIL_TEMPLATE_MANAGE = "EMAIL_TEMPLATE_MANAGE";
+    // The do-not-email list (V13). ADMIN only, like EMAIL_TEMPLATE_MANAGE.
+    public static final String EMAIL_SUPPRESSION_MANAGE = "EMAIL_SUPPRESSION_MANAGE";
     public static final String DOCUMENT_MANAGE = "DOCUMENT_MANAGE";
 
     private static final String NOT_AUTHORIZED = "You are not authorized to access this record.";

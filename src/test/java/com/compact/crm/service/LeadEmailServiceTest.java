@@ -55,6 +55,7 @@ class LeadEmailServiceTest {
     @Mock private DocumentService documentService;
     @Mock private ActivityLogService activityLogService;
     @Mock private BrevoEmailClient brevoEmailClient;
+    @Mock private EmailSuppressionService suppressionService;
 
     private LeadEmailService leadEmailService;
 
@@ -73,7 +74,8 @@ class LeadEmailServiceTest {
 
         leadEmailService = new LeadEmailService(
                 leadRepository, accessControlService, currentUserService,
-                emailTemplateService, documentService, activityLogService, brevoEmailClient
+                emailTemplateService, documentService, activityLogService, brevoEmailClient,
+                suppressionService
         );
 
         adminRole = Role.builder().id(1L).name("ADMIN").rank(100).build();
@@ -359,6 +361,53 @@ class LeadEmailServiceTest {
         assertThat(result.getSucceededIds()).containsExactly(51L);
         assertThat(result.getSkippedIds()).containsExactly(50L);
         assertThat(result.getSkipReasons()).containsEntry(50L, "Send failed");
+    }
+
+    // ---------------------------------------------------------------- do-not-email list
+
+    @Test
+    void sendIndividual_toASuppressedAddress_isRejectedBeforeAnythingIsSent() {
+
+        grant(employeeRole, EMAIL_SEND, Scope.OWN);
+        when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
+
+        Lead lead = leadOwnedBy(60L, employeeA, "Optout@Acme.com");
+        when(leadRepository.findById(60L)).thenReturn(Optional.of(lead));
+        when(suppressionService.isSuppressed("Optout@Acme.com")).thenReturn(true);
+
+        SendLeadEmailRequest request = new SendLeadEmailRequest(
+                EmailTemplateType.KEEP_IN_TOUCH, null, "Subject", "Body", List.of());
+
+        assertThatThrownBy(() -> leadEmailService.sendIndividual(60L, request))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("do-not-email");
+
+        verify(brevoEmailClient, never()).send(any(), any(), any(), any());
+        verify(activityLogService, never()).log(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void sendBulkKeepInTouch_skipsSuppressedAddresses_andStillSendsToTheOthers() {
+
+        grant(employeeRole, EMAIL_SEND, Scope.OWN);
+        when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
+
+        Lead blocked = leadOwnedBy(70L, employeeA, "blocked@acme.com");
+        Lead fine = leadOwnedBy(71L, employeeA, "fine@acme.com");
+
+        when(leadRepository.findById(70L)).thenReturn(Optional.of(blocked));
+        when(leadRepository.findById(71L)).thenReturn(Optional.of(fine));
+        when(suppressionService.isSuppressed("blocked@acme.com")).thenReturn(true);
+
+        BulkEmailResult result = leadEmailService.sendBulkKeepInTouch(new BulkKeepInTouchEmailRequest(
+                List.of(70L, 71L), null, "Subject", "Body", List.of()));
+
+        assertThat(result.getSucceededIds()).containsExactly(71L);
+        assertThat(result.getSkippedIds()).containsExactly(70L);
+        assertThat(result.getSkipReasons()).containsEntry(70L, "On the do-not-email list");
+
+        verify(brevoEmailClient, never()).send(eq("blocked@acme.com"), any(), any(), any());
+        verify(brevoEmailClient).send(eq("fine@acme.com"), any(), any(), any());
     }
 
 }

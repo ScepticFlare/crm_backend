@@ -20,10 +20,41 @@ public interface EmailSendLogRepository extends JpaRepository<EmailSendLog, Long
 
     List<EmailSendLog> findByBatchIdOrderByIdAsc(String batchId);
 
-    boolean existsByBatchIdAndSentByEmployeeIdNot(String batchId, Long sentByEmployeeId);
-
     List<EmailSendLog> findByBatchIdAndRecipientEmailAndStatusIn(
             String batchId, String recipientEmail, Collection<EmailSendStatus> statuses);
+
+    // ---- cross-batch duplicate protection --------------------------------
+    // "Active" statuses (ACCEPTED / UNKNOWN / PENDING) recorded by ANOTHER batch
+    // since :since. A PENDING claim counts too: it is either being sent right now
+    // or is a stale claim that reads as UNKNOWN - both mean "may already be sent".
+
+    @Query("select distinct l.recipientEmail from EmailSendLog l "
+            + "where l.recipientEmail in :emails and l.status in :statuses "
+            + "and l.updatedAt >= :since and l.batchId <> :batchId")
+    List<String> findRecentlyActiveEmails(@Param("emails") Collection<String> emails,
+                                          @Param("statuses") Collection<EmailSendStatus> statuses,
+                                          @Param("since") LocalDateTime since,
+                                          @Param("batchId") String batchId);
+
+    @Query("select distinct l.targetId from EmailSendLog l "
+            + "where l.target = :target and l.targetId in :ids and l.status in :statuses "
+            + "and l.updatedAt >= :since and l.batchId <> :batchId")
+    List<Long> findRecentlyActiveRecordIds(@Param("target") BulkEmailTarget target,
+                                           @Param("ids") Collection<Long> ids,
+                                           @Param("statuses") Collection<EmailSendStatus> statuses,
+                                           @Param("since") LocalDateTime since,
+                                           @Param("batchId") String batchId);
+
+    // Tie-break for two requests (other batches, or other records of the same
+    // batch) claiming the same address at the same instant: the claim with the
+    // lowest id wins, any later one backs off.
+    @Query("select count(l) from EmailSendLog l "
+            + "where l.recipientEmail = :email and l.id < :id "
+            + "and l.status in :statuses and l.updatedAt >= :since")
+    long countEarlierActiveClaims(@Param("email") String email,
+                                  @Param("id") Long id,
+                                  @Param("statuses") Collection<EmailSendStatus> statuses,
+                                  @Param("since") LocalDateTime since);
 
     // Atomic compare-and-set so two concurrent submissions cannot both win
     // the right to (re)send the same recipient. Returns 1 only for the winner.

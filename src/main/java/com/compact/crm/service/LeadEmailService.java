@@ -53,6 +53,7 @@ public class LeadEmailService {
     private final DocumentService documentService;
     private final ActivityLogService activityLogService;
     private final BrevoEmailClient brevoEmailClient;
+    private final EmailSuppressionService suppressionService;
 
     // Prefill for the composer: renders the chosen (or default, if
     // templateId is omitted) template's subject/body against this Lead's
@@ -88,6 +89,11 @@ public class LeadEmailService {
                 || EmailPlaceholderRenderer.hasAdminMarker(request.getBody())) {
             throw new IllegalArgumentException(
                     "The message still contains an unfinished [[...]] section. Complete or remove it before sending.");
+        }
+
+        // The do-not-email list applies to every customer-facing send path.
+        if (suppressionService.isSuppressed(lead.getEmail())) {
+            throw new IllegalArgumentException("This email address is on the do-not-email list.");
         }
 
         List<Document> documents = resolveDocuments(request.getDocumentIds());
@@ -177,6 +183,12 @@ public class LeadEmailService {
             if (isBlank(lead.getEmail())) {
                 skipped.add(id);
                 skipReasons.put(id, "No email address");
+                continue;
+            }
+
+            if (suppressionService.isSuppressed(lead.getEmail())) {
+                skipped.add(id);
+                skipReasons.put(id, "On the do-not-email list");
                 continue;
             }
 
