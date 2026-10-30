@@ -103,7 +103,7 @@ class LeadSpecificationsIntegrationTest {
     @Test
     void hasIndustryId_filtersToMatchingIndustryOnly() {
 
-        List<Lead> results = leadRepository.findAll(LeadSpecifications.hasIndustryId(manufacturing.getId()));
+        List<Lead> results = leadRepository.findAll(LeadSpecifications.hasIndustryId(List.of(manufacturing.getId())));
 
         assertThat(results).extracting(Lead::getCompanyName).containsExactly("Acme Corp");
     }
@@ -111,7 +111,7 @@ class LeadSpecificationsIntegrationTest {
     @Test
     void hasBatteryId_filtersToLeadsWithThatBatteryOnly() {
 
-        List<Lead> results = leadRepository.findAll(LeadSpecifications.hasBatteryId(batteryX.getId()));
+        List<Lead> results = leadRepository.findAll(LeadSpecifications.hasBatteryId(List.of(batteryX.getId())));
 
         assertThat(results).extracting(Lead::getCompanyName).containsExactly("Acme Corp");
     }
@@ -127,7 +127,7 @@ class LeadSpecificationsIntegrationTest {
     @Test
     void hasStatus_filtersToMatchingStatusOnly() {
 
-        List<Lead> results = leadRepository.findAll(LeadSpecifications.hasStatus(LeadStatus.LOST));
+        List<Lead> results = leadRepository.findAll(LeadSpecifications.hasStatus(List.of(LeadStatus.LOST)));
 
         assertThat(results).extracting(Lead::getCompanyName).containsExactly("Beta Inc");
     }

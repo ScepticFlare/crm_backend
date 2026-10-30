@@ -20,6 +20,27 @@ public interface OpportunityRepository extends JpaRepository<Opportunity, Long>,
 
     boolean existsByLeadId(Long leadId);
 
+    // Export helpers: fetch-join the Opportunity's own line items for a chunk
+    // of already-loaded rows, initializing those collections on the managed
+    // entities in the same persistence context (results are not used
+    // directly). One query per collection per chunk - see
+    // OpportunityService.findForExport.
+    @Query("""
+        SELECT DISTINCT o FROM Opportunity o
+        LEFT JOIN FETCH o.opportunityProducts op
+        LEFT JOIN FETCH op.product
+        WHERE o.id IN :ids
+    """)
+    List<Opportunity> fetchProducts(@Param("ids") List<Long> ids);
+
+    @Query("""
+        SELECT DISTINCT o FROM Opportunity o
+        LEFT JOIN FETCH o.opportunityBatteries ob
+        LEFT JOIN FETCH ob.battery
+        WHERE o.id IN :ids
+    """)
+    List<Opportunity> fetchBatteries(@Param("ids") List<Long> ids);
+
     // Backs the Lead-delete cascade (LeadService.deleteLead/getDeleteImpact)
     // - a Lead has at most one Opportunity (enforced by existsByLeadId's
     // duplicate-conversion check in convertLeadToOpportunity).

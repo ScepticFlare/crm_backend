@@ -1,8 +1,9 @@
 package com.compact.crm.specification;
 
 import com.compact.crm.entity.FollowUp;
-import com.compact.crm.entity.LeadProduct;
 import com.compact.crm.entity.Opportunity;
+import com.compact.crm.entity.OpportunityBattery;
+import com.compact.crm.entity.OpportunityProduct;
 import com.compact.crm.enums.FollowUpStatus;
 import com.compact.crm.enums.LeadValidity;
 import com.compact.crm.enums.SalesStageType;
@@ -15,6 +16,7 @@ import org.springframework.data.jpa.domain.Specification;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 
 public final class OpportunitySpecifications {
@@ -36,6 +38,9 @@ public final class OpportunitySpecifications {
                 cb.like(cb.lower(root.get("lead").get("contactPerson")), like),
                 cb.like(cb.lower(root.get("lead").get("phone")), like),
                 cb.like(cb.lower(root.get("lead").get("email")), like),
+                cb.like(cb.lower(root.get("contactPerson")), like),
+                cb.like(cb.lower(root.get("contactPhone")), like),
+                cb.like(cb.lower(root.get("contactEmail")), like),
                 cb.like(cb.lower(root.get("salesStage").get("name")), like)
         );
     }
@@ -58,57 +63,98 @@ public final class OpportunitySpecifications {
         return (root, query, cb) -> cb.not(root.get("salesStage").get("name").in(stageNames));
     }
 
-    public static Specification<Opportunity> hasSalesStageId(Long salesStageId) {
+    // Multi-value filters: a record matches when it has ANY of the selected
+    // values (OR within one filter); different filters are AND-ed by
+    // SpecificationUtil.and. A null / empty selection means "no restriction".
 
-        if (salesStageId == null) {
+    public static Specification<Opportunity> hasSalesStageId(Collection<Long> salesStageIds) {
+
+        List<Long> ids = SpecificationUtil.selected(salesStageIds);
+
+        if (ids == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("salesStage").get("id"), salesStageId);
+        return (root, query, cb) -> root.get("salesStage").get("id").in(ids);
     }
 
-    public static Specification<Opportunity> hasAssignedEmployeeId(Long employeeId) {
+    public static Specification<Opportunity> hasAssignedEmployeeId(Collection<Long> employeeIds) {
 
-        if (employeeId == null) {
+        List<Long> ids = SpecificationUtil.selected(employeeIds);
+
+        if (ids == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("lead").get("assignedEmployee").get("id"), employeeId);
+        return (root, query, cb) -> root.get("lead").get("assignedEmployee").get("id").in(ids);
     }
 
-    public static Specification<Opportunity> hasIndustryId(Long industryId) {
+    public static Specification<Opportunity> hasIndustryId(Collection<Long> industryIds) {
 
-        if (industryId == null) {
+        List<Long> ids = SpecificationUtil.selected(industryIds);
+
+        if (ids == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("lead").get("industry").get("id"), industryId);
+        return (root, query, cb) -> root.get("lead").get("industry").get("id").in(ids);
     }
 
-    public static Specification<Opportunity> hasLeadValidity(LeadValidity leadValidity) {
+    public static Specification<Opportunity> hasLeadValidity(Collection<LeadValidity> validities) {
 
-        if (leadValidity == null) {
+        List<LeadValidity> values = SpecificationUtil.selected(validities);
+
+        if (values == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("leadValidity"), leadValidity);
+        return (root, query, cb) -> root.get("leadValidity").in(values);
     }
 
-    public static Specification<Opportunity> hasProductId(Long productId) {
+    // The Opportunity's OWN products (opportunity_products), not the Lead's:
+    // reports must follow the current requirement, which may have changed
+    // since conversion. EXISTS keeps one row per Opportunity (no duplicates
+    // when it has several matching line items).
+    public static Specification<Opportunity> hasProductId(Collection<Long> productIds) {
 
-        if (productId == null) {
+        List<Long> ids = SpecificationUtil.selected(productIds);
+
+        if (ids == null) {
             return null;
         }
 
         return (root, query, cb) -> {
 
             Subquery<Long> subquery = query.subquery(Long.class);
-            var lp = subquery.from(LeadProduct.class);
+            Root<OpportunityProduct> op = subquery.from(OpportunityProduct.class);
 
-            subquery.select(lp.get("id"));
+            subquery.select(op.<Long>get("id"));
             subquery.where(
-                    cb.equal(lp.get("lead"), root.get("lead")),
-                    cb.equal(lp.get("product").get("id"), productId)
+                    cb.equal(op.get("opportunity"), root),
+                    op.get("product").get("id").in(ids)
+            );
+
+            return cb.exists(subquery);
+        };
+    }
+
+    public static Specification<Opportunity> hasBatteryId(Collection<Long> batteryIds) {
+
+        List<Long> ids = SpecificationUtil.selected(batteryIds);
+
+        if (ids == null) {
+            return null;
+        }
+
+        return (root, query, cb) -> {
+
+            Subquery<Long> subquery = query.subquery(Long.class);
+            Root<OpportunityBattery> ob = subquery.from(OpportunityBattery.class);
+
+            subquery.select(ob.<Long>get("id"));
+            subquery.where(
+                    cb.equal(ob.get("opportunity"), root),
+                    ob.get("battery").get("id").in(ids)
             );
 
             return cb.exists(subquery);
@@ -284,6 +330,19 @@ public final class OpportunitySpecifications {
         }
 
         return (root, query, cb) -> root.get("id").in(ids);
+    }
+
+    // "All matching records except the ones the user unticked" - see the
+    // export's excludeIds. Null / empty excludes nothing.
+    public static Specification<Opportunity> notInIds(Collection<Long> ids) {
+
+        List<Long> excluded = SpecificationUtil.selected(ids);
+
+        if (excluded == null) {
+            return null;
+        }
+
+        return (root, query, cb) -> cb.not(root.get("id").in(excluded));
     }
 
     // Opportunity is returned to the frontend whole (controller.

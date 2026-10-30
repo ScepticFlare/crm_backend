@@ -84,6 +84,7 @@ class BulkEmailMigrationPostgresTest {
                 .locations("classpath:db/migration")
                 .baselineVersion("1")
                 .baselineOnMigrate(true)
+                .target("13")
                 .load();
 
         flyway.migrate();
@@ -171,6 +172,7 @@ class BulkEmailMigrationPostgresTest {
                 .locations("classpath:db/migration")
                 .baselineVersion("1")
                 .baselineOnMigrate(true)
+                .target("13")
                 .load();
 
         assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);

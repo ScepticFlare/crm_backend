@@ -1,11 +1,16 @@
 package com.compact.crm.specification;
 
 import com.compact.crm.entity.Customer;
+import com.compact.crm.entity.OpportunityBattery;
+import com.compact.crm.entity.OpportunityProduct;
 import jakarta.persistence.criteria.Fetch;
 import jakarta.persistence.criteria.JoinType;
+import jakarta.persistence.criteria.Root;
+import jakarta.persistence.criteria.Subquery;
 import org.springframework.data.jpa.domain.Specification;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 
 public final class CustomerSpecifications {
@@ -30,23 +35,78 @@ public final class CustomerSpecifications {
         );
     }
 
-    public static Specification<Customer> hasAssignedEmployeeId(Long employeeId) {
+    // Multi-value filters: a customer matches when it has ANY of the selected
+    // values (OR within one filter); different filters are AND-ed by
+    // SpecificationUtil.and. A null / empty selection means "no restriction".
 
-        if (employeeId == null) {
+    public static Specification<Customer> hasAssignedEmployeeId(Collection<Long> employeeIds) {
+
+        List<Long> ids = SpecificationUtil.selected(employeeIds);
+
+        if (ids == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("assignedEmployee").get("id"), employeeId);
+        return (root, query, cb) -> root.get("assignedEmployee").get("id").in(ids);
     }
 
-    public static Specification<Customer> hasIndustryId(Long industryId) {
+    public static Specification<Customer> hasIndustryId(Collection<Long> industryIds) {
 
-        if (industryId == null) {
+        List<Long> ids = SpecificationUtil.selected(industryIds);
+
+        if (ids == null) {
             return null;
         }
 
         return (root, query, cb) ->
-                cb.equal(root.get("opportunity").get("lead").get("industry").get("id"), industryId);
+                root.get("opportunity").get("lead").get("industry").get("id").in(ids);
+    }
+
+    // The won Opportunity's own (current) products - see Opportunity.opportunityProducts.
+    public static Specification<Customer> hasProductId(Collection<Long> productIds) {
+
+        List<Long> ids = SpecificationUtil.selected(productIds);
+
+        if (ids == null) {
+            return null;
+        }
+
+        return (root, query, cb) -> {
+
+            Subquery<Long> subquery = query.subquery(Long.class);
+            Root<OpportunityProduct> op = subquery.from(OpportunityProduct.class);
+
+            subquery.select(op.<Long>get("id"));
+            subquery.where(
+                    cb.equal(op.get("opportunity"), root.get("opportunity")),
+                    op.get("product").get("id").in(ids)
+            );
+
+            return cb.exists(subquery);
+        };
+    }
+
+    public static Specification<Customer> hasBatteryId(Collection<Long> batteryIds) {
+
+        List<Long> ids = SpecificationUtil.selected(batteryIds);
+
+        if (ids == null) {
+            return null;
+        }
+
+        return (root, query, cb) -> {
+
+            Subquery<Long> subquery = query.subquery(Long.class);
+            Root<OpportunityBattery> ob = subquery.from(OpportunityBattery.class);
+
+            subquery.select(ob.<Long>get("id"));
+            subquery.where(
+                    cb.equal(ob.get("opportunity"), root.get("opportunity")),
+                    ob.get("battery").get("id").in(ids)
+            );
+
+            return cb.exists(subquery);
+        };
     }
 
     public static Specification<Customer> hasCity(String city) {
@@ -106,6 +166,18 @@ public final class CustomerSpecifications {
         }
 
         return (root, query, cb) -> root.get("id").in(ids);
+    }
+
+    // "All matching records except the ones the user unticked".
+    public static Specification<Customer> notInIds(Collection<Long> ids) {
+
+        List<Long> excluded = SpecificationUtil.selected(ids);
+
+        if (excluded == null) {
+            return null;
+        }
+
+        return (root, query, cb) -> cb.not(root.get("id").in(excluded));
     }
 
     // Customer is returned to the frontend whole (controller.

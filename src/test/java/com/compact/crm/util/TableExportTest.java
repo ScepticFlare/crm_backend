@@ -168,4 +168,44 @@ class TableExportTest {
                 "00441234567890123456,007,1234567890123,12345678901.5,2026-03-09,2026-03-09 14:05:07,\"Acme, \"\"Best\"\" Ltd\"");
         assertThat(csv).doesNotContain("E+").doesNotContain("E1");
     }
+
+    // ---- column chooser -> export columns ----
+
+    private static final java.util.Map<String, TableExport.Column<Row>> CATALOG = new java.util.LinkedHashMap<>();
+
+    static {
+        CATALOG.put("phone", TableExport.Column.text("Phone", Row::phone));
+        CATALOG.put("company", TableExport.Column.text("Company", Row::company));
+        CATALOG.put("value", TableExport.Column.decimal("Value", Row::value));
+    }
+
+    private static List<String> headers(List<TableExport.Column<Row>> columns) {
+        return columns.stream().map(TableExport.Column::header).toList();
+    }
+
+    @Test
+    void select_keepsTheRequestedColumnsInTheRequestedOrder() {
+        assertThat(headers(TableExport.select(CATALOG, "value,phone", List.of("company"))))
+                .containsExactly("Value", "Phone");
+    }
+
+    @Test
+    void select_ignoresUnknownAndRepeatedKeys() {
+        assertThat(headers(TableExport.select(CATALOG, " company , nope,company,phone", List.of("value"))))
+                .containsExactly("Company", "Phone");
+    }
+
+    @Test
+    void select_fallsBackToTheDefaultsWhenNothingUsableIsRequested() {
+        assertThat(headers(TableExport.select(CATALOG, null, List.of("company", "phone"))))
+                .containsExactly("Company", "Phone");
+        assertThat(headers(TableExport.select(CATALOG, "unknown", List.of("value"))))
+                .containsExactly("Value");
+    }
+
+    @Test
+    void response_reportsTheRowCount() {
+        ResponseEntity<byte[]> response = TableExport.response("x", "csv", "X", COLUMNS, ROWS);
+        assertThat(response.getHeaders().getFirst(TableExport.ROW_COUNT_HEADER)).isEqualTo(String.valueOf(ROWS.size()));
+    }
 }

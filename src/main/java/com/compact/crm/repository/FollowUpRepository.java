@@ -68,11 +68,11 @@ public interface FollowUpRepository extends JpaRepository<FollowUp, Long>, JpaSp
     // Opportunities (or originating Leads) that have at least one PENDING
     // follow-up scheduled from `from` onward - the same PENDING + upcoming
     // definition the Dashboard's Upcoming Follow Ups widget uses.
-    // Rows are [opportunity id, remarks]. The remarks ("next action") are
+    // Rows are [opportunity id, remarks, scheduled date]. The remarks ("next action") are
     // checked in Java by service.FollowUpRules so the rule has ONE definition
     // and does not depend on how the database handles functions over TEXT.
     @Query("""
-        SELECT f.opportunity.id, f.remarks FROM FollowUp f
+        SELECT f.opportunity.id, f.remarks, f.scheduledDate FROM FollowUp f
         WHERE f.opportunity.id IN :opportunityIds
         AND f.status = com.compact.crm.enums.FollowUpStatus.PENDING
         AND f.scheduledDate >= :from
@@ -81,9 +81,9 @@ public interface FollowUpRepository extends JpaRepository<FollowUp, Long>, JpaSp
             @Param("opportunityIds") List<Long> opportunityIds,
             @Param("from") LocalDateTime from);
 
-    // Rows are [lead id, remarks].
+    // Rows are [lead id, remarks, scheduled date].
     @Query("""
-        SELECT f.lead.id, f.remarks FROM FollowUp f
+        SELECT f.lead.id, f.remarks, f.scheduledDate FROM FollowUp f
         WHERE f.lead.id IN :leadIds
         AND f.status = com.compact.crm.enums.FollowUpStatus.PENDING
         AND f.scheduledDate >= :from

@@ -53,9 +53,42 @@ public class ActivityTypeService {
 
         ActivityType activity = getById(id);
 
-        activity.setName(request.getName().trim());
+        String newName = request.getName().trim();
+
+        if (newName.isEmpty()) {
+            throw new IllegalArgumentException("Activity name is required");
+        }
+
+        repository.findByNameIgnoreCase(newName)
+                .filter(other -> !other.getId().equals(activity.getId()))
+                .ifPresent(other -> {
+                    throw new IllegalArgumentException("Activity already exists");
+                });
+
+        activity.setName(newName);
 
         return repository.save(activity);
+    }
+
+    // The activities the CRM was designed around (the former
+    // enums.ActivityType values), offered on a database that has none yet -
+    // e.g. a fresh local / test database. Only when the table is completely
+    // empty: an environment that already has activity types (active or not)
+    // is never changed, so an Admin's own list is never overwritten or
+    // extended. Returns how many were created.
+    static final List<String> DEFAULT_NAMES = List.of(
+            "Call", "Email", "Meeting", "Visit", "Demo", "Quotation", "WhatsApp", "Other");
+
+    @CacheEvict(cacheNames = "activityTypes", allEntries = true)
+    public int seedDefaultsIfEmpty() {
+
+        if (repository.count() > 0) {
+            return 0;
+        }
+
+        DEFAULT_NAMES.forEach(name -> repository.save(ActivityType.builder().name(name).build()));
+
+        return DEFAULT_NAMES.size();
     }
 
     @CacheEvict(cacheNames = "activityTypes", allEntries = true)

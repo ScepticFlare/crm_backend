@@ -10,6 +10,7 @@ import jakarta.persistence.criteria.Subquery;
 import org.springframework.data.jpa.domain.Specification;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 
 public final class LeadSpecifications {
@@ -33,40 +34,52 @@ public final class LeadSpecifications {
         );
     }
 
-    public static Specification<Lead> hasStatus(LeadStatus status) {
+    // Multi-value filters: a lead matches when it has ANY of the selected
+    // values (OR within one filter); different filters are AND-ed by
+    // SpecificationUtil.and. A null / empty selection means "no restriction".
 
-        if (status == null) {
+    public static Specification<Lead> hasStatus(Collection<LeadStatus> statuses) {
+
+        List<LeadStatus> values = SpecificationUtil.selected(statuses);
+
+        if (values == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("leadStatus"), status);
+        return (root, query, cb) -> root.get("leadStatus").in(values);
     }
 
-    public static Specification<Lead> hasLeadSourceId(Long leadSourceId) {
+    public static Specification<Lead> hasLeadSourceId(Collection<Long> leadSourceIds) {
 
-        if (leadSourceId == null) {
+        List<Long> ids = SpecificationUtil.selected(leadSourceIds);
+
+        if (ids == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("leadSource").get("id"), leadSourceId);
+        return (root, query, cb) -> root.get("leadSource").get("id").in(ids);
     }
 
-    public static Specification<Lead> hasIndustryId(Long industryId) {
+    public static Specification<Lead> hasIndustryId(Collection<Long> industryIds) {
 
-        if (industryId == null) {
+        List<Long> ids = SpecificationUtil.selected(industryIds);
+
+        if (ids == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("industry").get("id"), industryId);
+        return (root, query, cb) -> root.get("industry").get("id").in(ids);
     }
 
-    public static Specification<Lead> hasAssignedEmployeeId(Long employeeId) {
+    public static Specification<Lead> hasAssignedEmployeeId(Collection<Long> employeeIds) {
 
-        if (employeeId == null) {
+        List<Long> ids = SpecificationUtil.selected(employeeIds);
+
+        if (ids == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("assignedEmployee").get("id"), employeeId);
+        return (root, query, cb) -> root.get("assignedEmployee").get("id").in(ids);
     }
 
     public static Specification<Lead> hasCity(String city) {
@@ -87,18 +100,23 @@ public final class LeadSpecifications {
         return (root, query, cb) -> cb.equal(cb.lower(root.get("state")), state.toLowerCase());
     }
 
-    public static Specification<Lead> hasLeadValidity(LeadValidity leadValidity) {
+    public static Specification<Lead> hasLeadValidity(Collection<LeadValidity> validities) {
 
-        if (leadValidity == null) {
+        List<LeadValidity> values = SpecificationUtil.selected(validities);
+
+        if (values == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("leadValidity"), leadValidity);
+        return (root, query, cb) -> root.get("leadValidity").in(values);
     }
 
-    public static Specification<Lead> hasProductId(Long productId) {
+    // EXISTS keeps one row per lead even when several line items match.
+    public static Specification<Lead> hasProductId(Collection<Long> productIds) {
 
-        if (productId == null) {
+        List<Long> ids = SpecificationUtil.selected(productIds);
+
+        if (ids == null) {
             return null;
         }
 
@@ -110,16 +128,19 @@ public final class LeadSpecifications {
             subquery.select(lp.get("id"));
             subquery.where(
                     cb.equal(lp.get("lead"), root),
-                    cb.equal(lp.get("product").get("id"), productId)
+                    lp.get("product").get("id").in(ids)
             );
 
             return cb.exists(subquery);
         };
     }
 
-    public static Specification<Lead> hasBatteryId(Long batteryId) {
+    // EXISTS keeps one row per lead even when several line items match.
+    public static Specification<Lead> hasBatteryId(Collection<Long> batteryIds) {
 
-        if (batteryId == null) {
+        List<Long> ids = SpecificationUtil.selected(batteryIds);
+
+        if (ids == null) {
             return null;
         }
 
@@ -131,7 +152,7 @@ public final class LeadSpecifications {
             subquery.select(lb.get("id"));
             subquery.where(
                     cb.equal(lb.get("lead"), root),
-                    cb.equal(lb.get("battery").get("id"), batteryId)
+                    lb.get("battery").get("id").in(ids)
             );
 
             return cb.exists(subquery);
@@ -180,6 +201,19 @@ public final class LeadSpecifications {
         }
 
         return (root, query, cb) -> root.get("id").in(ids);
+    }
+
+    // "All matching records except the ones the user unticked" - see the
+    // export's excludeIds. Null / empty excludes nothing.
+    public static Specification<Lead> notInIds(Collection<Long> ids) {
+
+        List<Long> excluded = SpecificationUtil.selected(ids);
+
+        if (excluded == null) {
+            return null;
+        }
+
+        return (root, query, cb) -> cb.not(root.get("id").in(excluded));
     }
 
     // Every Lead returned to the frontend gets serialized whole (see
@@ -298,6 +332,24 @@ public final class LeadSpecifications {
     //   VALID   - stored VALID, or already converted (an Opportunity exists);
     //   NEW     - everything else.
     // Any other value is ignored (no filter).
+    // Several display groups: a lead in ANY of them. Values other than
+    // NEW / VALID / INVALID are ignored, as for a single group.
+    public static Specification<Lead> inStatusGroups(Collection<LeadStatus> groups) {
+
+        List<LeadStatus> selected = SpecificationUtil.selected(groups);
+
+        if (selected == null) {
+            return null;
+        }
+
+        List<Specification<Lead>> specs = selected.stream()
+                .map(LeadSpecifications::inStatusGroup)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+
+        return specs.isEmpty() ? null : Specification.anyOf(specs);
+    }
+
     public static Specification<Lead> inStatusGroup(LeadStatus group) {
 
         if (group != LeadStatus.NEW && group != LeadStatus.VALID && group != LeadStatus.INVALID) {

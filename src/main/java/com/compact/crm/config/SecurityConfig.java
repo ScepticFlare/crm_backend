@@ -142,6 +142,10 @@ public class SecurityConfig {
 
         configuration.setAllowedHeaders(List.of("*"));
 
+        // Readable by the frontend (cross-origin): how many rows an export
+        // contains - see util.TableExport.ROW_COUNT_HEADER.
+        configuration.setExposedHeaders(List.of(com.compact.crm.util.TableExport.ROW_COUNT_HEADER));
+
         configuration.setAllowCredentials(true);
 
         UrlBasedCorsConfigurationSource source =

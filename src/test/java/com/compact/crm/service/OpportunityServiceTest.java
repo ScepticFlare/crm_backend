@@ -47,6 +47,8 @@ class OpportunityServiceTest {
     @Mock private SalesStageService salesStageService;
     @Mock private ActivityLogService activityLogService;
     @Mock private FollowUpService followUpService;
+    @Mock private com.compact.crm.repository.ProductRepository productRepository;
+    @Mock private com.compact.crm.repository.BatteryRepository batteryRepository;
 
     private OpportunityService opportunityService;
 
@@ -77,7 +79,9 @@ class OpportunityServiceTest {
                 accessControlService,
                 salesStageService,
                 activityLogService,
-                followUpService
+                followUpService,
+                productRepository,
+                batteryRepository
         );
 
         adminRole = Role.builder().id(1L).name("ADMIN").rank(100).build();

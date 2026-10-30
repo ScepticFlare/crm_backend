@@ -82,11 +82,14 @@ public class FollowUpController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir,
             @RequestParam(required = false) String ids,
+            @RequestParam(required = false) String excludeIds,
             @RequestParam(required = false) String format
     ) {
 
-        List<Long> idList = parseIds(ids);
-        List<FollowUp> followUps = followUpService.findForExport(criteria, idList, sortBy, sortDir);
+        // `excludeIds` (no `ids`): every matching row except these - the
+        // "select all N matching records" selection minus unticked rows.
+        List<FollowUp> followUps = followUpService.findForExport(
+                criteria, parseIds(ids), parseIds(excludeIds), sortBy, sortDir);
 
         List<TableExport.Column<FollowUp>> columns = List.of(
                 TableExport.Column.text("Lead", f -> f.getLead() != null ? f.getLead().getCompanyName() : null),

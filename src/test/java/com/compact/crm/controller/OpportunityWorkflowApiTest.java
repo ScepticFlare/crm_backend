@@ -76,6 +76,10 @@ class OpportunityWorkflowApiTest {
     private Employee admin;
     private Industry industry;
     private LeadSourceMaster leadSource;
+    private com.compact.crm.entity.Product product;
+    private com.compact.crm.entity.Battery battery;
+    @Autowired private com.compact.crm.repository.ProductRepository productRepository;
+    @Autowired private com.compact.crm.repository.BatteryRepository batteryRepository;
 
     @BeforeEach
     void setUp() {
@@ -112,6 +116,8 @@ class OpportunityWorkflowApiTest {
 
         industry = industryRepository.save(Industry.builder().name("Api Industry").build());
         leadSource = leadSourceMasterRepository.save(LeadSourceMaster.builder().name("Api Source").build());
+        product = productRepository.save(com.compact.crm.entity.Product.builder().name("Api Product").build());
+        battery = batteryRepository.save(com.compact.crm.entity.Battery.builder().name("Api Battery").build());
 
     }
 
@@ -397,6 +403,8 @@ class OpportunityWorkflowApiTest {
                 + "\"city\":\"Pune\",\"state\":\"MH\",\"industryId\":" + industry.getId()
                 + ",\"leadSourceId\":" + leadSource.getId() + ",\"leadStatus\":\"" + status + "\","
                 + "\"assignedEmployeeId\":" + admin.getId()
+                + ",\"products\":[{\"productId\":" + product.getId() + ",\"quantity\":1}]"
+                + ",\"batteries\":[{\"batteryId\":" + battery.getId() + ",\"quantity\":1}]"
                 + (reason == null ? "" : ",\"invalidReason\":\"" + reason + "\"") + "}";
     }
 

@@ -54,8 +54,8 @@ import static org.mockito.Mockito.when;
 @EnabledIfEnvironmentVariable(named = "CRM_TEST_PG_URL", matches = ".+")
 @SpringBootTest(properties = {
         "spring.datasource.url=${CRM_TEST_PG_URL}",
-        "spring.datasource.username=postgres",
-        "spring.datasource.password=",
+        "spring.datasource.username=${CRM_TEST_PG_USER:postgres}",
+        "spring.datasource.password=${CRM_TEST_PG_PASSWORD:}",
         "spring.datasource.driver-class-name=org.postgresql.Driver",
         "spring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect",
         "spring.jpa.hibernate.ddl-auto=update",
@@ -69,7 +69,10 @@ class BulkEmailPostgresFlowTest {
     @BeforeAll
     static void freshBaseline() throws Exception {
 
-        DriverManagerDataSource ds = new DriverManagerDataSource(System.getenv("CRM_TEST_PG_URL"), "postgres", "");
+        DriverManagerDataSource ds = new DriverManagerDataSource(
+                System.getenv("CRM_TEST_PG_URL"),
+                System.getenv().getOrDefault("CRM_TEST_PG_USER", "postgres"),
+                System.getenv().getOrDefault("CRM_TEST_PG_PASSWORD", ""));
 
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
             st.execute("DROP SCHEMA public CASCADE");

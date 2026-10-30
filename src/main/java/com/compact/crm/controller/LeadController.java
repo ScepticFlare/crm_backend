@@ -80,7 +80,7 @@ public class LeadController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        criteria.setStatus(LeadStatus.DROPPED);
+        criteria.setStatus(List.of(LeadStatus.DROPPED));
         return leadService.searchLeads(criteria, page, size, sortBy, sortDir);
     }
 
@@ -92,7 +92,7 @@ public class LeadController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        criteria.setStatus(LeadStatus.LOST);
+        criteria.setStatus(List.of(LeadStatus.LOST));
         return leadService.searchLeads(criteria, page, size, sortBy, sortDir);
     }
 
@@ -104,7 +104,7 @@ public class LeadController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        criteria.setStatus(LeadStatus.UNRESPONSIVE);
+        criteria.setStatus(List.of(LeadStatus.UNRESPONSIVE));
         return leadService.searchLeads(criteria, page, size, sortBy, sortDir);
     }
 
@@ -116,7 +116,7 @@ public class LeadController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        criteria.setStatus(LeadStatus.INVALID);
+        criteria.setStatus(List.of(LeadStatus.INVALID));
         return leadService.searchLeads(criteria, page, size, sortBy, sortDir);
     }
 
@@ -194,6 +194,7 @@ public class LeadController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir,
             @RequestParam(required = false) String ids,
+            @RequestParam(required = false) String excludeIds,
             @RequestParam(required = false) String category,
             @RequestParam(required = false) String format
     ) {
@@ -201,7 +202,10 @@ public class LeadController {
         List<Long> idList = parseIds(ids);
         Set<LeadCategory> categories = LeadCategory.parseSelection(category, LeadCategory.ACTIVE);
 
-        List<Lead> leads = leadService.findForExport(criteria, idList, sortBy, sortDir, categories);
+        // `excludeIds` (no `ids`): every matching lead except these - the
+        // "select all N matching records" selection minus unticked rows.
+        List<Lead> leads = leadService.findForExport(
+                criteria, idList, parseIds(excludeIds), sortBy, sortDir, categories);
 
         List<TableExport.Column<Lead>> columns = List.of(
                 TableExport.Column.text("Company", Lead::getCompanyName),

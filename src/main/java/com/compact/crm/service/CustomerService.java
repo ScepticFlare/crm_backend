@@ -48,6 +48,9 @@ public class CustomerService {
             "company", "companyName",
             "contactPerson", "contactPerson",
             "createdDate", "createdAt",
+            "updatedDate", "updatedAt",
+            "customerCode", "customerCode",
+            "city", "city",
             "assignedEmployee", "assignedEmployee.name"
     );
 
@@ -215,22 +218,47 @@ public class CustomerService {
 
     public List<Customer> findForExport(
             CustomerSearchCriteria criteria, List<Long> ids, String sortBy, String sortDir) {
+        return findForExport(criteria, ids, null, sortBy, sortDir);
+    }
+
+    // Same scope and filters as the list. `ids` = exactly those rows;
+    // otherwise every matching row minus `excludeIds` (the "select all N
+    // matching records" selection). Both are AND-ed onto the scoped query.
+    public List<Customer> findForExport(
+            CustomerSearchCriteria criteria, List<Long> ids, List<Long> excludeIds, String sortBy, String sortDir) {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
         accessControlService.requirePermission(currentEmployee, CUSTOMER_EXPORT);
         List<Long> employeeIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, CUSTOMER_VIEW);
 
-        Specification<Customer> spec = buildSpecification(criteria, employeeIds);
+        Specification<Customer> spec = SpecificationUtil.and(java.util.Arrays.asList(
+                buildSpecification(criteria, employeeIds),
+                ids != null && !ids.isEmpty() ? CustomerSpecifications.hasIds(ids) : null,
+                CustomerSpecifications.notInIds(excludeIds)
+        ));
 
-        if (ids != null && !ids.isEmpty()) {
-            Specification<Customer> idSpec = CustomerSpecifications.hasIds(ids);
-            spec = (spec == null) ? idSpec : spec.and(idSpec);
+        long matching = customerRepository.count(spec);
+
+        if (matching > EXPORT_MAX_ROWS) {
+            throw new IllegalArgumentException("This export would contain " + matching
+                    + " customers; at most " + EXPORT_MAX_ROWS + " can be exported at once. Please narrow the filters.");
         }
 
         Sort sort = SortWhitelist.resolve(sortBy, sortDir, SORT_FIELDS, "createdDate");
         Pageable pageable = PageRequest.of(0, EXPORT_MAX_ROWS, sort);
 
         List<Customer> customers = customerRepository.findAll(spec, pageable).getContent();
+
+        // The won Opportunities' line items, a couple of queries per 1,000 rows.
+        List<Long> opportunityIds = customers.stream()
+                .map(Customer::getOpportunity).filter(java.util.Objects::nonNull)
+                .map(Opportunity::getId).distinct().toList();
+
+        for (int i = 0; i < opportunityIds.size(); i += 1000) {
+            List<Long> chunk = opportunityIds.subList(i, Math.min(opportunityIds.size(), i + 1000));
+            opportunityRepository.fetchProducts(chunk);
+            opportunityRepository.fetchBatteries(chunk);
+        }
 
         activityLogService.log(
                 currentEmployee,
@@ -298,6 +326,8 @@ public class CustomerService {
                 CustomerSpecifications.search(criteria.getSearch()),
                 CustomerSpecifications.hasAssignedEmployeeId(criteria.getAssignedEmployeeId()),
                 CustomerSpecifications.hasIndustryId(criteria.getIndustryId()),
+                CustomerSpecifications.hasProductId(criteria.getProductId()),
+                CustomerSpecifications.hasBatteryId(criteria.getBatteryId()),
                 CustomerSpecifications.hasCity(criteria.getCity()),
                 CustomerSpecifications.hasState(criteria.getState()),
                 CustomerSpecifications.createdBetween(createdFrom, createdTo)

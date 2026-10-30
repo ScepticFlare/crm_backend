@@ -11,9 +11,10 @@ import java.time.LocalDate;
 public class FollowUpSearchCriteria {
 
     private String search;
-    private Long activityTypeId;
-    private FollowUpStatus status;
-    private Long assignedEmployeeId;
+    // Multi-valued: repeat the param to match ANY of the values.
+    private java.util.List<Long> activityTypeId;
+    private java.util.List<FollowUpStatus> status;
+    private java.util.List<Long> assignedEmployeeId;
     private Long leadId;
     private Long opportunityId;
     private LocalDate scheduledFrom;

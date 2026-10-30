@@ -10,6 +10,7 @@ import jakarta.persistence.criteria.JoinType;
 import org.springframework.data.jpa.domain.Specification;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 
 public final class FollowUpSpecifications {
@@ -48,33 +49,41 @@ public final class FollowUpSpecifications {
         };
     }
 
-    public static Specification<FollowUp> hasStatus(FollowUpStatus status) {
+    // Multi-value filters: ANY of the selected values (OR within one
+    // filter); different filters are AND-ed. Null / empty = no restriction.
+    public static Specification<FollowUp> hasStatus(Collection<FollowUpStatus> statuses) {
 
-        if (status == null) {
+        List<FollowUpStatus> values = SpecificationUtil.selected(statuses);
+
+        if (values == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("status"), status);
+        return (root, query, cb) -> root.get("status").in(values);
     }
 
-    public static Specification<FollowUp> hasActivityTypeId(Long activityTypeId) {
+    public static Specification<FollowUp> hasActivityTypeId(Collection<Long> activityTypeIds) {
 
-        if (activityTypeId == null) {
+        List<Long> ids = SpecificationUtil.selected(activityTypeIds);
+
+        if (ids == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("activityType").get("id"), activityTypeId);
+        return (root, query, cb) -> root.get("activityType").get("id").in(ids);
     }
 
     // The employee assigned to carry out the follow-up (FollowUp.employee)
     // - distinct from record ownership/RBAC scope (ownerIn below).
-    public static Specification<FollowUp> hasEmployeeId(Long employeeId) {
+    public static Specification<FollowUp> hasEmployeeId(Collection<Long> employeeIds) {
 
-        if (employeeId == null) {
+        List<Long> ids = SpecificationUtil.selected(employeeIds);
+
+        if (ids == null) {
             return null;
         }
 
-        return (root, query, cb) -> cb.equal(root.get("employee").get("id"), employeeId);
+        return (root, query, cb) -> root.get("employee").get("id").in(ids);
     }
 
     public static Specification<FollowUp> hasLeadId(Long leadId) {
@@ -137,6 +146,18 @@ public final class FollowUpSpecifications {
                     oppLeadJoin.get("assignedEmployee").get("id").in(employeeIds)
             );
         };
+    }
+
+    // "All matching records except the ones the user unticked".
+    public static Specification<FollowUp> notInIds(Collection<Long> ids) {
+
+        List<Long> excluded = SpecificationUtil.selected(ids);
+
+        if (excluded == null) {
+            return null;
+        }
+
+        return (root, query, cb) -> cb.not(root.get("id").in(excluded));
     }
 
     public static Specification<FollowUp> hasIds(List<Long> ids) {

@@ -17,7 +17,12 @@ public class ActivityTypeController {
 
     private final ActivityTypeService service;
 
+    // Activity-type configuration (create / rename / deactivate / activate)
+    // is ADMIN-only on the server, same as sales stages. Reading the active
+    // list (GET below) stays open to every authenticated user so Managers
+    // and Employees can still pick an activity for a follow-up.
     @PostMapping
+    @PreAuthorize("hasRole('ADMIN')")
     public ActivityType create(
             @Valid @RequestBody ActivityTypeRequest request) {
 
@@ -41,6 +46,7 @@ public class ActivityTypeController {
     }
 
     @PutMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     public ActivityType update(
             @PathVariable Long id,
             @Valid @RequestBody ActivityTypeRequest request) {

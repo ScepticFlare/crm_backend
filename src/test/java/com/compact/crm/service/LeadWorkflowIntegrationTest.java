@@ -150,7 +150,27 @@ class LeadWorkflowIntegrationTest {
         r.setLeadSourceId(source.getId());
         r.setLeadStatus(status);
         r.setAssignedEmployeeId(owner.getId());
+        // A new lead needs at least one Product and one Battery.
+        r.setProducts(List.of(new com.compact.crm.dto.request.LeadProductRequest(testProduct().getId(), 1)));
+        r.setBatteries(List.of(new com.compact.crm.dto.request.LeadBatteryRequest(testBattery().getId(), 1)));
         return r;
+    }
+
+    @Autowired private com.compact.crm.repository.ProductRepository productRepositoryForFixtures;
+    @Autowired private com.compact.crm.repository.BatteryRepository batteryRepositoryForFixtures;
+
+    private com.compact.crm.entity.Product testProduct() {
+        return productRepositoryForFixtures.findAll().stream()
+                .filter(p -> "Fixture Product".equals(p.getName())).findFirst()
+                .orElseGet(() -> productRepositoryForFixtures.save(
+                        com.compact.crm.entity.Product.builder().name("Fixture Product").build()));
+    }
+
+    private com.compact.crm.entity.Battery testBattery() {
+        return batteryRepositoryForFixtures.findAll().stream()
+                .filter(b -> "Fixture Battery".equals(b.getName())).findFirst()
+                .orElseGet(() -> batteryRepositoryForFixtures.save(
+                        com.compact.crm.entity.Battery.builder().name("Fixture Battery").build()));
     }
 
     // A lead as the old code stored it - any status, written directly.
@@ -422,13 +442,13 @@ class LeadWorkflowIntegrationTest {
 
         // the stored-status filter used by the legacy pages is unchanged
         LeadSearchCriteria stored = new LeadSearchCriteria();
-        stored.setStatus(LeadStatus.CONTACTED);
+        stored.setStatus(java.util.List.of(LeadStatus.CONTACTED));
         assertThat(leadService.searchLeads(stored, 0, 50, null, null).getContent())
                 .extracting(Lead::getCompanyName).containsExactly("Legacy contacted");
 
         // pagination keeps working with the group filter
         LeadSearchCriteria c = new LeadSearchCriteria();
-        c.setStatusGroup(LeadStatus.NEW);
+        c.setStatusGroup(java.util.List.of(LeadStatus.NEW));
         Page<Lead> p0 = leadService.searchLeads(c, 0, 1, null, null);
         assertThat(p0.getTotalElements()).isEqualTo(2);
         assertThat(p0.getTotalPages()).isEqualTo(2);
@@ -438,7 +458,7 @@ class LeadWorkflowIntegrationTest {
     private List<String> names(LeadStatus group) {
 
         LeadSearchCriteria c = new LeadSearchCriteria();
-        c.setStatusGroup(group);
+        c.setStatusGroup(java.util.List.of(group));
 
         return leadService.searchLeads(c, 0, 100, null, null).getContent().stream()
                 .map(Lead::getCompanyName).toList();

@@ -126,6 +126,12 @@ public class LeadService {
         String invalidReason = validateStatusAndReason(
                 request.getLeadStatus(), null, null, request.getInvalidReason());
 
+        // A new lead must say what the customer wants: at least one Product
+        // and at least one Battery. Checked here (not only in the form) so a
+        // direct API call cannot skip it. Not a database constraint - older
+        // leads without them still exist and stay editable (see updateLead).
+        requireLineItems(request, true, true);
+
         Lead lead = Lead.builder()
                 .companyName(request.getCompanyName())
                 .contactPerson(request.getContactPerson())
@@ -184,6 +190,28 @@ public class LeadService {
         String trimmed = value.trim();
 
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    static final String PRODUCT_REQUIRED_MESSAGE = "Please select at least one Product.";
+    static final String BATTERY_REQUIRED_MESSAGE = "Please select at least one Battery.";
+
+    // Rows without a selected item are not counted (the form can send an
+    // unfilled row); each kept row's id/quantity is validated by @Valid.
+    private static void requireLineItems(LeadRequest request, boolean productRequired, boolean batteryRequired) {
+
+        boolean hasProduct = request.getProducts() != null
+                && request.getProducts().stream().anyMatch(p -> p != null && p.getProductId() != null);
+
+        boolean hasBattery = request.getBatteries() != null
+                && request.getBatteries().stream().anyMatch(b -> b != null && b.getBatteryId() != null);
+
+        if (productRequired && !hasProduct) {
+            throw new IllegalArgumentException(PRODUCT_REQUIRED_MESSAGE);
+        }
+
+        if (batteryRequired && !hasBattery) {
+            throw new IllegalArgumentException(BATTERY_REQUIRED_MESSAGE);
+        }
     }
 
     // Status rules of the simplified Lead workflow, checked before anything
@@ -372,15 +400,32 @@ public class LeadService {
     public List<Lead> findForExport(
             LeadSearchCriteria criteria, List<Long> ids, String sortBy, String sortDir,
             Set<LeadCategory> categories) {
+        return findForExport(criteria, ids, null, sortBy, sortDir, categories);
+    }
+
+    // `excludeIds` (used when `ids` is empty): every matching lead except
+    // these - the "select all N matching records" selection minus the rows
+    // the user unticked. Both lists are AND-ed onto the scoped, filtered
+    // query, so neither can bring in a lead outside it. More matching rows
+    // than EXPORT_MAX_ROWS is rejected instead of silently truncated.
+    public List<Lead> findForExport(
+            LeadSearchCriteria criteria, List<Long> ids, List<Long> excludeIds, String sortBy, String sortDir,
+            Set<LeadCategory> categories) {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
         List<Long> employeeIds = accessControlService.resolveExportEmployeeIds(currentEmployee, LEAD_VIEW, LEAD_EXPORT);
 
-        Specification<Lead> spec = buildSpecification(criteria, employeeIds, categories);
+        Specification<Lead> spec = SpecificationUtil.and(java.util.Arrays.asList(
+                buildSpecification(criteria, employeeIds, categories),
+                ids != null && !ids.isEmpty() ? LeadSpecifications.hasIds(ids) : null,
+                LeadSpecifications.notInIds(excludeIds)
+        ));
 
-        if (ids != null && !ids.isEmpty()) {
-            Specification<Lead> idSpec = LeadSpecifications.hasIds(ids);
-            spec = (spec == null) ? idSpec : spec.and(idSpec);
+        long matching = leadRepository.count(spec);
+
+        if (matching > EXPORT_MAX_ROWS) {
+            throw new IllegalArgumentException("This export would contain " + matching
+                    + " leads; at most " + EXPORT_MAX_ROWS + " can be exported at once. Please narrow the filters.");
         }
 
         Sort sort = SortWhitelist.resolve(sortBy, sortDir, SORT_FIELDS, "createdDate");
@@ -477,7 +522,7 @@ public class LeadService {
                 LeadSpecifications.inCategories(categories),
                 LeadSpecifications.search(criteria.getSearch()),
                 LeadSpecifications.hasStatus(criteria.getStatus()),
-                LeadSpecifications.inStatusGroup(criteria.getStatusGroup()),
+                LeadSpecifications.inStatusGroups(criteria.getStatusGroup()),
                 Boolean.TRUE.equals(criteria.getInactiveView())
                         ? LeadSpecifications.inactiveView(StaleLeadRules.cutoff(staleAfterMonths)) : null,
                 LeadSpecifications.hasLeadSourceId(criteria.getLeadSourceId()),
@@ -522,6 +567,11 @@ public class LeadService {
         // lead completely untouched.
         String newInvalidReason = validateStatusAndReason(
                 request.getLeadStatus(), previousStatus, previousInvalidReason, request.getInvalidReason());
+
+        // An existing lead keeps its Product / Battery once it has one (an
+        // edit cannot remove the last one), but an older lead that never had
+        // one can still be edited without inventing a value.
+        requireLineItems(request, !lead.getLeadProducts().isEmpty(), !lead.getLeadBatteries().isEmpty());
 
         lead.setCompanyName(request.getCompanyName());
         lead.setContactPerson(request.getContactPerson());

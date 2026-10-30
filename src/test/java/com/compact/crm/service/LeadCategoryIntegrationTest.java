@@ -182,13 +182,13 @@ class LeadCategoryIntegrationTest {
     void leadsPage_noFilterCanLeakInvalidOrConvertedLeads() {
 
         LeadSearchCriteria byInvalidGroup = new LeadSearchCriteria();
-        byInvalidGroup.setStatusGroup(LeadStatus.INVALID);
+        byInvalidGroup.setStatusGroup(java.util.List.of(LeadStatus.INVALID));
 
         LeadSearchCriteria byInvalidStatus = new LeadSearchCriteria();
-        byInvalidStatus.setStatus(LeadStatus.INVALID);
+        byInvalidStatus.setStatus(java.util.List.of(LeadStatus.INVALID));
 
         LeadSearchCriteria byInvalidValidity = new LeadSearchCriteria();
-        byInvalidValidity.setLeadValidity(LeadValidity.INVALID);
+        byInvalidValidity.setLeadValidity(java.util.List.of(LeadValidity.INVALID));
 
         LeadSearchCriteria byConvertedName = new LeadSearchCriteria();
         byConvertedName.setSearch("Converted");
@@ -196,7 +196,7 @@ class LeadCategoryIntegrationTest {
         // "VALID" group includes converted leads in the display mapping - the
         // page must still only show the unconverted one.
         LeadSearchCriteria byValidGroup = new LeadSearchCriteria();
-        byValidGroup.setStatusGroup(LeadStatus.VALID);
+        byValidGroup.setStatusGroup(java.util.List.of(LeadStatus.VALID));
 
         assertThat(leadService.searchActiveLeads(byInvalidGroup, 0, 50, null, null).getContent()).isEmpty();
         assertThat(leadService.searchActiveLeads(byInvalidStatus, 0, 50, null, null).getContent()).isEmpty();
@@ -388,7 +388,7 @@ class LeadCategoryIntegrationTest {
 
         // Filtering on someone else's employee id yields nothing.
         LeadSearchCriteria other = new LeadSearchCriteria();
-        other.setAssignedEmployeeId(otherStaff.getId());
+        other.setAssignedEmployeeId(java.util.List.of(otherStaff.getId()));
 
         assertThat(leadService.findForExport(other, null, null, null, null)).isEmpty();
     }
@@ -517,7 +517,27 @@ class LeadCategoryIntegrationTest {
         r.setLeadSourceId(source.getId());
         r.setLeadStatus(status);
         r.setAssignedEmployeeId(owner.getId());
+        // A new lead needs at least one Product and one Battery.
+        r.setProducts(List.of(new com.compact.crm.dto.request.LeadProductRequest(testProduct().getId(), 1)));
+        r.setBatteries(List.of(new com.compact.crm.dto.request.LeadBatteryRequest(testBattery().getId(), 1)));
         return r;
+    }
+
+    @Autowired private com.compact.crm.repository.ProductRepository productRepositoryForFixtures;
+    @Autowired private com.compact.crm.repository.BatteryRepository batteryRepositoryForFixtures;
+
+    private com.compact.crm.entity.Product testProduct() {
+        return productRepositoryForFixtures.findAll().stream()
+                .filter(p -> "Fixture Product".equals(p.getName())).findFirst()
+                .orElseGet(() -> productRepositoryForFixtures.save(
+                        com.compact.crm.entity.Product.builder().name("Fixture Product").build()));
+    }
+
+    private com.compact.crm.entity.Battery testBattery() {
+        return batteryRepositoryForFixtures.findAll().stream()
+                .filter(b -> "Fixture Battery".equals(b.getName())).findFirst()
+                .orElseGet(() -> batteryRepositoryForFixtures.save(
+                        com.compact.crm.entity.Battery.builder().name("Fixture Battery").build()));
     }
 
     private Lead stored(String company, LeadStatus status, Employee owner) {

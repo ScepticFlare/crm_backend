@@ -7,9 +7,12 @@ import com.compact.crm.util.BusinessClock;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.BatchSize;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 @Entity
 @Table(name = "opportunities")
@@ -65,6 +68,29 @@ public class Opportunity {
     @JoinColumn(name = "lead_id")
     private Lead lead;
 
+    // The Opportunity's own contact details and product/battery line items.
+    // Copied from the Lead on conversion (and backfilled for older
+    // Opportunities by migration V14), then edited on the Opportunity only -
+    // the Lead keeps its original values for traceability, and later Lead
+    // edits no longer change what the Opportunity (and its reports) show.
+    private String contactPerson;
+
+    private String contactPhone;
+
+    private String contactEmail;
+
+    // @BatchSize: serialized on every list row, same N+1 reasoning as
+    // Lead.leadProducts / Lead.leadBatteries.
+    @OneToMany(mappedBy = "opportunity", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    @BatchSize(size = 50)
+    private List<OpportunityProduct> opportunityProducts = new ArrayList<>();
+
+    @OneToMany(mappedBy = "opportunity", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    @BatchSize(size = 50)
+    private List<OpportunityBattery> opportunityBatteries = new ArrayList<>();
+
     // Not persisted. Set by OpportunityService for responses: true when the
     // Opportunity is ACTIVE and has no qualifying follow-up (pending, scheduled
     // now or later, with a described next action - see service.FollowUpRules -
@@ -77,6 +103,12 @@ public class Opportunity {
     // stage (used e.g. when a POSTPONED opportunity is being resumed).
     @Transient
     private Boolean hasNextAction;
+
+    // Not persisted. Earliest PENDING follow-up scheduled now or later on
+    // the Opportunity or its originating Lead (same follow-ups hasNextAction
+    // looks at). Null when there is none or it was not computed.
+    @Transient
+    private LocalDateTime nextFollowUpDate;
 
     // Computed flags for the UI (never persisted, never change the stage):
 

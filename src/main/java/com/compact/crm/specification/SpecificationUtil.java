@@ -2,7 +2,9 @@ package com.compact.crm.specification;
 
 import org.springframework.data.jpa.domain.Specification;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Small combinator shared by every module's *Specifications class - folds a
@@ -29,5 +31,19 @@ public final class SpecificationUtil {
         }
 
         return combined;
+    }
+
+    // A multi-value filter's selection with nulls and repeats dropped, or
+    // null when nothing is left - "no restriction", never an empty IN ()
+    // that would silently match nothing.
+    public static <V> List<V> selected(Collection<V> values) {
+
+        if (values == null) {
+            return null;
+        }
+
+        List<V> cleaned = values.stream().filter(Objects::nonNull).distinct().toList();
+
+        return cleaned.isEmpty() ? null : cleaned;
     }
 }

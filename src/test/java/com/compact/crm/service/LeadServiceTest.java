@@ -449,7 +449,15 @@ class LeadServiceTest {
             return saved;
         });
 
-        leadService.createLead(validLeadRequest(reportOfA.getId()));
+        LeadRequest request = validLeadRequest(reportOfA.getId());
+        request.setProducts(List.of(new com.compact.crm.dto.request.LeadProductRequest(5L, 1)));
+        request.setBatteries(List.of(new com.compact.crm.dto.request.LeadBatteryRequest(6L, 1)));
+        when(productRepository.findById(5L)).thenReturn(Optional.of(
+                com.compact.crm.entity.Product.builder().id(5L).name("UPS").build()));
+        when(batteryRepository.findById(6L)).thenReturn(Optional.of(
+                com.compact.crm.entity.Battery.builder().id(6L).name("SMF").build()));
+
+        leadService.createLead(request);
 
         verify(activityLogService).log(
                 eq(reportOfA), eq(ActivityModule.LEAD), eq(ActivityAction.CREATE),

@@ -2,6 +2,7 @@ package com.compact.crm.dto.request;
 
 import com.compact.crm.enums.LeadValidity;
 import com.compact.crm.enums.OpportunitySubStatus;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.AllArgsConstructor;
@@ -10,6 +11,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.LocalDate;
+import java.util.List;
 
 @Getter
 @Setter
@@ -59,4 +61,23 @@ public class OpportunityRequest {
     private java.time.LocalDateTime nextFollowUpDate;
 
     private Long nextActionActivityTypeId;
+
+    // The Opportunity's own contact details and line items (edit only -
+    // conversion copies them from the Lead). Each is optional: null means
+    // "leave as it is", so an older client that never sends them changes
+    // nothing. A blank string clears an optional value; contact person and
+    // phone cannot be cleared once set. Format rules are checked in
+    // OpportunityService only for a value that actually changes, so a
+    // historical record with an odd phone stays editable.
+    private String contactPerson;
+
+    private String contactPhone;
+
+    private String contactEmail;
+
+    @Valid
+    private List<LeadProductRequest> products;
+
+    @Valid
+    private List<LeadBatteryRequest> batteries;
 }

@@ -1,17 +1,25 @@
 package com.compact.crm.service;
 
 import com.compact.crm.dto.request.FollowUpRequest;
+import com.compact.crm.dto.request.LeadBatteryRequest;
+import com.compact.crm.dto.request.LeadProductRequest;
 import com.compact.crm.dto.request.OpportunityRequest;
 import com.compact.crm.dto.request.ReturnToInProgressRequest;
 import com.compact.crm.dto.response.BulkOperationResult;
 import com.compact.crm.dto.response.DeleteImpactResponse;
 import com.compact.crm.dto.response.WorkflowAlertsResponse;
 import com.compact.crm.dto.search.OpportunitySearchCriteria;
+import com.compact.crm.entity.Battery;
 import com.compact.crm.entity.Customer;
 import com.compact.crm.entity.Employee;
 import com.compact.crm.entity.FollowUp;
 import com.compact.crm.entity.Lead;
+import com.compact.crm.entity.LeadBattery;
+import com.compact.crm.entity.LeadProduct;
 import com.compact.crm.entity.Opportunity;
+import com.compact.crm.entity.OpportunityBattery;
+import com.compact.crm.entity.OpportunityProduct;
+import com.compact.crm.entity.Product;
 import com.compact.crm.entity.SalesStage;
 import com.compact.crm.enums.ActivityAction;
 import com.compact.crm.enums.ActivityModule;
@@ -19,10 +27,12 @@ import com.compact.crm.enums.FollowUpStatus;
 import com.compact.crm.enums.LeadValidity;
 import com.compact.crm.enums.SalesStageType;
 import com.compact.crm.exception.ResourceNotFoundException;
+import com.compact.crm.repository.BatteryRepository;
 import com.compact.crm.repository.CustomerRepository;
 import com.compact.crm.repository.FollowUpRepository;
 import com.compact.crm.repository.LeadRepository;
 import com.compact.crm.repository.OpportunityRepository;
+import com.compact.crm.repository.ProductRepository;
 import com.compact.crm.security.AccessControlService;
 import com.compact.crm.security.CurrentUserService;
 import com.compact.crm.specification.OpportunitySpecifications;
@@ -69,6 +79,8 @@ public class OpportunityService {
     private final SalesStageService salesStageService;
     private final ActivityLogService activityLogService;
     private final FollowUpService followUpService;
+    private final ProductRepository productRepository;
+    private final BatteryRepository batteryRepository;
 
     // Still enforced on UPDATE (see updateOpportunity) - editing a WON
     // opportunity's stage away from WON while a Customer conversion already
@@ -85,8 +97,11 @@ public class OpportunityService {
             "value", "productValue",
             "closingDate", "expectedClosingDate",
             "createdDate", "createdAt",
+            "updatedDate", "updatedAt",
             "stage", "salesStage.name",
-            "assignedEmployee", "lead.assignedEmployee.name"
+            "assignedEmployee", "lead.assignedEmployee.name",
+            "company", "lead.companyName",
+            "contactPerson", "contactPerson"
     );
 
     private static final int EXPORT_MAX_ROWS = 20_000;
@@ -139,6 +154,8 @@ public class OpportunityService {
                 .leadValidity(request.getLeadValidity())
                 .lead(lead)
                 .build();
+
+        copyDetailsFromLead(opportunity, lead);
 
         applyWorkflowRules(opportunity, request, salesStage, true);
 
@@ -205,6 +222,185 @@ public class OpportunityService {
         String trimmed = value.trim();
 
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    // ---- the Opportunity's own contact details and line items ----
+
+    private static final java.util.regex.Pattern PHONE_PATTERN = java.util.regex.Pattern.compile("\\d{10}");
+
+    private static final java.util.regex.Pattern EMAIL_PATTERN =
+            java.util.regex.Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
+
+    // Conversion takes a copy of the Lead's contact details and product /
+    // battery line items. From then on the Opportunity's copy is the one that
+    // is edited and reported on; the Lead keeps its original values.
+    // Line items missing a product/battery are skipped, never guessed.
+    private static void copyDetailsFromLead(Opportunity opportunity, Lead lead) {
+
+        opportunity.setContactPerson(lead.getContactPerson());
+        opportunity.setContactPhone(lead.getPhone());
+        opportunity.setContactEmail(lead.getEmail());
+
+        for (LeadProduct lp : lead.getLeadProducts()) {
+
+            if (lp.getProduct() != null && lp.getQuantity() != null) {
+                opportunity.getOpportunityProducts().add(OpportunityProduct.builder()
+                        .opportunity(opportunity).product(lp.getProduct()).quantity(lp.getQuantity()).build());
+            }
+        }
+
+        for (LeadBattery lb : lead.getLeadBatteries()) {
+
+            if (lb.getBattery() != null && lb.getQuantity() != null) {
+                opportunity.getOpportunityBatteries().add(OpportunityBattery.builder()
+                        .opportunity(opportunity).battery(lb.getBattery()).quantity(lb.getQuantity()).build());
+            }
+        }
+    }
+
+    // The contact / line-item part of an edit, validated and resolved before
+    // anything on the entity is touched. A null field means "not sent - keep".
+    private record DetailsEdit(
+            String contactPerson, String contactPhone, String contactEmail,
+            List<OpportunityProduct> products, List<OpportunityBattery> batteries) {
+    }
+
+    private DetailsEdit resolveDetailsEdit(Opportunity opportunity, OpportunityRequest request) {
+
+        String person = editedText(request.getContactPerson(), opportunity.getContactPerson(),
+                "Contact Person is required.", null, null);
+
+        String phone = editedText(request.getContactPhone(), opportunity.getContactPhone(),
+                "Contact Phone is required.", PHONE_PATTERN, "Contact Phone must contain exactly 10 digits.");
+
+        String email = editedText(request.getContactEmail(), opportunity.getContactEmail(),
+                null, EMAIL_PATTERN, "Please enter a valid Contact Email.");
+
+        List<OpportunityProduct> products = null;
+
+        if (request.getProducts() != null) {
+
+            if (request.getProducts().isEmpty() && !opportunity.getOpportunityProducts().isEmpty()) {
+                throw new IllegalArgumentException("Please keep at least one Product on the opportunity.");
+            }
+
+            products = new ArrayList<>();
+
+            for (LeadProductRequest item : request.getProducts()) {
+
+                if (item == null || item.getProductId() == null) {
+                    throw new IllegalArgumentException("Please select a Product for every product row.");
+                }
+
+                Product product = productRepository.findById(item.getProductId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Product not found"));
+
+                products.add(OpportunityProduct.builder()
+                        .opportunity(opportunity).product(product).quantity(quantityOf(item.getQuantity())).build());
+            }
+        }
+
+        List<OpportunityBattery> batteries = null;
+
+        if (request.getBatteries() != null) {
+
+            if (request.getBatteries().isEmpty() && !opportunity.getOpportunityBatteries().isEmpty()) {
+                throw new IllegalArgumentException("Please keep at least one Battery on the opportunity.");
+            }
+
+            batteries = new ArrayList<>();
+
+            for (LeadBatteryRequest item : request.getBatteries()) {
+
+                if (item == null || item.getBatteryId() == null) {
+                    throw new IllegalArgumentException("Please select a Battery for every battery row.");
+                }
+
+                Battery battery = batteryRepository.findById(item.getBatteryId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Battery not found"));
+
+                batteries.add(OpportunityBattery.builder()
+                        .opportunity(opportunity).battery(battery).quantity(quantityOf(item.getQuantity())).build());
+            }
+        }
+
+        return new DetailsEdit(person, phone, email, products, batteries);
+    }
+
+    private static int quantityOf(Integer quantity) {
+
+        if (quantity == null || quantity < 1) {
+            throw new IllegalArgumentException("Quantity must be at least 1.");
+        }
+
+        return quantity;
+    }
+
+    // Resolves one edited text field. Returns the value to store, or the
+    // current value when the field was not sent. A value that is cleared
+    // while `requiredMessage` is set is rejected (an empty value that was
+    // already empty stays allowed). The format is only checked for a value
+    // that actually changes, so a historical value never blocks an edit.
+    private static String editedText(String requested, String current, String requiredMessage,
+                                     java.util.regex.Pattern format, String formatMessage) {
+
+        if (requested == null) {
+            return current;
+        }
+
+        String value = trimToNull(requested);
+
+        if (value == null) {
+
+            if (requiredMessage != null && trimToNull(current) != null) {
+                throw new IllegalArgumentException(requiredMessage);
+            }
+
+            return null;
+        }
+
+        if (format != null && !value.equals(current) && !format.matcher(value).matches()) {
+            throw new IllegalArgumentException(formatMessage);
+        }
+
+        return value;
+    }
+
+    private static void applyDetailsEdit(Opportunity opportunity, DetailsEdit edit) {
+
+        opportunity.setContactPerson(edit.contactPerson());
+        opportunity.setContactPhone(edit.contactPhone());
+        opportunity.setContactEmail(edit.contactEmail());
+
+        // Replaced in place (orphanRemoval deletes the old rows) so the
+        // collection Hibernate tracks is never swapped out.
+        if (edit.products() != null) {
+            opportunity.getOpportunityProducts().clear();
+            opportunity.getOpportunityProducts().addAll(edit.products());
+        }
+
+        if (edit.batteries() != null) {
+            opportunity.getOpportunityBatteries().clear();
+            opportunity.getOpportunityBatteries().addAll(edit.batteries());
+        }
+    }
+
+    // "Name x qty; Name x qty" - how line items appear in the history and
+    // the export.
+    public static String describeProducts(Opportunity o) {
+
+        return o.getOpportunityProducts().stream()
+                .filter(op -> op.getProduct() != null)
+                .map(op -> op.getProduct().getName() + " x" + op.getQuantity())
+                .collect(java.util.stream.Collectors.joining("; "));
+    }
+
+    public static String describeBatteries(Opportunity o) {
+
+        return o.getOpportunityBatteries().stream()
+                .filter(ob -> ob.getBattery() != null)
+                .map(ob -> ob.getBattery().getName() + " x" + ob.getQuantity())
+                .collect(java.util.stream.Collectors.joining("; "));
     }
 
     // Validates the agreed workflow rules against the requested state and
@@ -312,7 +508,8 @@ public class OpportunityService {
     // before and after a change so only real differences are logged.
     private record Tracked(
             String title, String value, String validity, String stage, String subStatus,
-            String closingDate, String lostReason, String reviewDate, String ackFor, String postponedReason) {
+            String closingDate, String lostReason, String reviewDate, String ackFor, String postponedReason,
+            String contactPerson, String contactPhone, String contactEmail, String products, String batteries) {
 
         static Tracked of(Opportunity o) {
 
@@ -328,7 +525,12 @@ public class OpportunityService {
                     o.getPostponedReviewDate() == null ? null : o.getPostponedReviewDate().toString(),
                     o.getPostponedReminderAcknowledgedFor() == null ? null
                             : o.getPostponedReminderAcknowledgedFor().toString(),
-                    o.getPostponedReason()
+                    o.getPostponedReason(),
+                    o.getContactPerson(),
+                    o.getContactPhone(),
+                    o.getContactEmail(),
+                    trimToNull(describeProducts(o)),
+                    trimToNull(describeBatteries(o))
             );
         }
     }
@@ -354,6 +556,14 @@ public class OpportunityService {
                 before.postponedReason(), after.postponedReason());
         written += logChange(actor, opportunity, "Postponed reminder acknowledged for review date",
                 "postponedReminderAcknowledgedFor", before.ackFor(), after.ackFor());
+        written += logChange(actor, opportunity, "Contact person", "contactPerson",
+                before.contactPerson(), after.contactPerson());
+        written += logChange(actor, opportunity, "Contact phone", "contactPhone",
+                before.contactPhone(), after.contactPhone());
+        written += logChange(actor, opportunity, "Contact email", "contactEmail",
+                before.contactEmail(), after.contactEmail());
+        written += logChange(actor, opportunity, "Products", "products", before.products(), after.products());
+        written += logChange(actor, opportunity, "Batteries", "batteries", before.batteries(), after.batteries());
 
         return written;
     }
@@ -405,20 +615,60 @@ public class OpportunityService {
                 .distinct()
                 .toList();
 
-        Set<Long> opportunitiesWithFollowUp =
-                qualifyingParentIds(followUpRepository.findPendingFutureByOpportunityIds(opportunityIds, now));
+        List<Object[]> opportunityRows = followUpRepository.findPendingFutureByOpportunityIds(opportunityIds, now);
+        List<Object[]> leadRows = leadIds.isEmpty() ? List.of()
+                : followUpRepository.findPendingFutureByLeadIds(leadIds, now);
 
-        Set<Long> leadsWithFollowUp = leadIds.isEmpty() ? Set.of()
-                : qualifyingParentIds(followUpRepository.findPendingFutureByLeadIds(leadIds, now));
+        Set<Long> opportunitiesWithFollowUp = qualifyingParentIds(opportunityRows);
+        Set<Long> leadsWithFollowUp = qualifyingParentIds(leadRows);
+
+        Map<Long, LocalDateTime> opportunityNext = earliestByParent(opportunityRows);
+        Map<Long, LocalDateTime> leadNext = earliestByParent(leadRows);
 
         for (Opportunity o : withIds) {
 
+            Long leadId = o.getLead() == null ? null : o.getLead().getId();
+
             boolean has = opportunitiesWithFollowUp.contains(o.getId())
-                    || (o.getLead() != null && leadsWithFollowUp.contains(o.getLead().getId()));
+                    || (leadId != null && leadsWithFollowUp.contains(leadId));
 
             o.setHasNextAction(has);
             o.setNoNextAction(OpportunityWorkflow.isActive(o) && !has);
+            o.setNextFollowUpDate(earlier(opportunityNext.get(o.getId()), leadId == null ? null : leadNext.get(leadId)));
         }
+    }
+
+    // Same decoration for an export-sized list, in chunks so no IN (...)
+    // list grows past what the database accepts.
+    private void decorateNextActionInChunks(List<Opportunity> opportunities) {
+
+        for (int i = 0; i < opportunities.size(); i += 1000) {
+            decorateNextAction(opportunities.subList(i, Math.min(opportunities.size(), i + 1000)));
+        }
+    }
+
+    // Earliest scheduled date per parent id, from [parent id, remarks, scheduled date] rows.
+    private static Map<Long, LocalDateTime> earliestByParent(List<Object[]> rows) {
+
+        Map<Long, LocalDateTime> earliest = new java.util.HashMap<>();
+
+        for (Object[] row : rows) {
+
+            if (row.length > 2 && row[2] instanceof LocalDateTime scheduled) {
+                earliest.merge((Long) row[0], scheduled, (a, b) -> a.isBefore(b) ? a : b);
+            }
+        }
+
+        return earliest;
+    }
+
+    private static LocalDateTime earlier(LocalDateTime a, LocalDateTime b) {
+
+        if (a == null) {
+            return b;
+        }
+
+        return b == null || a.isBefore(b) ? a : b;
     }
 
     // Ids (from [parent id, remarks] rows) whose follow-up has a described
@@ -564,23 +814,30 @@ public class OpportunityService {
     public Page<Opportunity> searchInProgressOpportunities(
             OpportunitySearchCriteria criteria, int page, int size, String sortBy, String sortDir) {
 
-        Employee currentEmployee = currentUserService.getCurrentEmployee();
-        List<Long> employeeIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, OPPORTUNITY_VIEW);
+        // Same query as every other list, restricted to active stages - shared
+        // with /export (activeOnly) so the In Progress export matches this list.
+        criteria.setActiveOnly(true);
 
-        Specification<Opportunity> spec = SpecificationUtil.and(java.util.Arrays.asList(
-                buildSpecification(criteria, employeeIds),
-                OpportunitySpecifications.activeStage()
-        ));
-
-        Sort sort = SortWhitelist.resolve(sortBy, sortDir, SORT_FIELDS, "createdDate");
-
-        Page<Opportunity> result = opportunityRepository.findAll(spec, PageRequest.of(page, size, sort));
-        decorateNextAction(result.getContent());
-        return result;
+        return searchOpportunities(criteria, page, size, sortBy, sortDir);
     }
 
+    // Backward-compatible overload (explicit ids only, no exclusions).
     public List<Opportunity> findForExport(
             OpportunitySearchCriteria criteria, List<Long> ids, String sortBy, String sortDir) {
+        return findForExport(criteria, ids, null, sortBy, sortDir);
+    }
+
+    // The rows of an export, chosen exactly like the list: the caller's RBAC
+    // scope AND the active filters, then
+    //  - `ids` given: only those rows ("export selected" on one page), or
+    //  - otherwise every matching row ("export all matching", or "select all
+    //    N matching records") minus `excludeIds` (rows the user unticked).
+    // Neither list can widen the result: both are AND-ed onto the scoped,
+    // filtered query, so an id outside it is simply ignored. More matching
+    // rows than EXPORT_MAX_ROWS is rejected instead of silently truncated.
+    public List<Opportunity> findForExport(
+            OpportunitySearchCriteria criteria, List<Long> ids, List<Long> excludeIds,
+            String sortBy, String sortDir) {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
         // Requires OPPORTUNITY_EXPORT and applies the narrower of the export
@@ -588,17 +845,37 @@ public class OpportunityService {
         List<Long> employeeIds = accessControlService.resolveExportEmployeeIds(
                 currentEmployee, OPPORTUNITY_VIEW, OPPORTUNITY_EXPORT);
 
-        Specification<Opportunity> spec = buildSpecification(criteria, employeeIds);
+        Specification<Opportunity> spec = SpecificationUtil.and(java.util.Arrays.asList(
+                buildSpecification(criteria, employeeIds),
+                ids != null && !ids.isEmpty() ? OpportunitySpecifications.hasIds(ids) : null,
+                OpportunitySpecifications.notInIds(excludeIds)
+        ));
 
-        if (ids != null && !ids.isEmpty()) {
-            Specification<Opportunity> idSpec = OpportunitySpecifications.hasIds(ids);
-            spec = (spec == null) ? idSpec : spec.and(idSpec);
+        long matching = opportunityRepository.count(spec);
+
+        if (matching > EXPORT_MAX_ROWS) {
+            throw new IllegalArgumentException("This export would contain " + matching
+                    + " opportunities; at most " + EXPORT_MAX_ROWS
+                    + " can be exported at once. Please narrow the filters.");
         }
 
         Sort sort = SortWhitelist.resolve(sortBy, sortDir, SORT_FIELDS, "createdDate");
         Pageable pageable = PageRequest.of(0, EXPORT_MAX_ROWS, sort);
 
         List<Opportunity> opportunities = opportunityRepository.findAll(spec, pageable).getContent();
+
+        // Line items for every exported row in a couple of queries per 1,000
+        // rows (instead of one lazy load per 50 rows per collection), loaded
+        // into the same persistence context the rows are already in.
+        List<Long> exportedIds = opportunities.stream().map(Opportunity::getId).toList();
+
+        for (int i = 0; i < exportedIds.size(); i += 1000) {
+            List<Long> chunk = exportedIds.subList(i, Math.min(exportedIds.size(), i + 1000));
+            opportunityRepository.fetchProducts(chunk);
+            opportunityRepository.fetchBatteries(chunk);
+        }
+
+        decorateNextActionInChunks(opportunities);
 
         activityLogService.log(
                 currentEmployee,
@@ -657,6 +934,7 @@ public class OpportunityService {
         return SpecificationUtil.and(java.util.Arrays.asList(
                 OpportunitySpecifications.fetchAssociations(),
                 OpportunitySpecifications.ownerIn(employeeIds),
+                Boolean.TRUE.equals(criteria.getActiveOnly()) ? OpportunitySpecifications.activeStage() : null,
                 OpportunitySpecifications.search(criteria.getSearch()),
                 OpportunitySpecifications.hasStageName(criteria.getStageName()),
                 OpportunitySpecifications.hasStageType(criteria.getStageType()),
@@ -664,6 +942,7 @@ public class OpportunityService {
                 OpportunitySpecifications.hasAssignedEmployeeId(criteria.getAssignedEmployeeId()),
                 OpportunitySpecifications.hasIndustryId(criteria.getIndustryId()),
                 OpportunitySpecifications.hasProductId(criteria.getProductId()),
+                OpportunitySpecifications.hasBatteryId(criteria.getBatteryId()),
                 OpportunitySpecifications.hasLeadValidity(criteria.getLeadValidity()),
                 OpportunitySpecifications.createdBetween(createdFrom, createdTo),
                 OpportunitySpecifications.expectedClosingBetween(
@@ -717,11 +996,18 @@ public class OpportunityService {
         NextActionInput nextAction = requireNextAction(
                 opportunity.getId(), opportunity.getLead(), salesStage, nextActionOf(request));
 
+        // Contact details / products / batteries: validated now, written
+        // after the workflow rules. Only the Opportunity is changed - never
+        // its Lead, which keeps the values it was converted with.
+        DetailsEdit details = resolveDetailsEdit(opportunity, request);
+
         Tracked before = Tracked.of(opportunity);
 
         // Workflow rules validate first (and throw before anything on the
         // entity is touched), then write the stage-dependent fields.
         applyWorkflowRules(opportunity, request, salesStage, false);
+
+        applyDetailsEdit(opportunity, details);
 
         opportunity.setTitle(request.getTitle());
         opportunity.setProductValue(request.getProductValue());

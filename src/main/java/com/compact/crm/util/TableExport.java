@@ -27,7 +27,11 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -95,12 +99,43 @@ public final class TableExport {
         return format != null && format.trim().equalsIgnoreCase("csv");
     }
 
+    // Number of data rows in the file - lets the UI confirm the export holds
+    // as many records as the user selected.
+    public static final String ROW_COUNT_HEADER = "X-Export-Row-Count";
+
+    // The columns a user picked in the list's column chooser, in that order,
+    // from a page's catalog of exportable columns (keys = the frontend column
+    // keys). `requested` is a comma-separated key list; unknown and repeated
+    // keys are ignored. Nothing requested (an older client) or nothing
+    // recognised gives `defaultKeys`, so a file is never empty of columns.
+    public static <T> List<Column<T>> select(
+            Map<String, Column<T>> catalog, String requested, List<String> defaultKeys) {
+
+        Set<String> keys = new LinkedHashSet<>();
+
+        if (requested != null) {
+            for (String key : requested.split(",")) {
+                String k = key.trim();
+                if (catalog.containsKey(k)) {
+                    keys.add(k);
+                }
+            }
+        }
+
+        if (keys.isEmpty()) {
+            keys.addAll(defaultKeys);
+        }
+
+        return keys.stream().map(catalog::get).filter(Objects::nonNull).toList();
+    }
+
     // Builds the download response. `format` is "csv" or anything else
     // (xlsx is the default); `baseName` has no extension.
     public static <T> ResponseEntity<byte[]> response(
             String baseName, String format, String sheetName, List<Column<T>> columns, List<T> rows) {
 
         HttpHeaders headers = new HttpHeaders();
+        headers.set(ROW_COUNT_HEADER, String.valueOf(rows.size()));
 
         byte[] body;
 

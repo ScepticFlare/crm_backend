@@ -77,6 +77,20 @@ public class FollowUpService {
         return null;
     }
 
+    // A deactivated activity type is no longer offered for new follow-ups, so
+    // it cannot be chosen through the API either. A follow-up that already
+    // uses it (`current`) keeps it when edited - nothing is rewritten.
+    // A NULL isActive (rows older than the flag) counts as active, as before.
+    private static void requireSelectableActivityType(ActivityType chosen, ActivityType current) {
+
+        boolean keepsCurrent = current != null && current.getId().equals(chosen.getId());
+
+        if (Boolean.FALSE.equals(chosen.getIsActive()) && !keepsCurrent) {
+            throw new IllegalArgumentException(
+                    "Activity type \"" + chosen.getName() + "\" is inactive and cannot be selected.");
+        }
+    }
+
     // A PENDING follow-up on an Opportunity IS that opportunity's next action,
     // so it has to say what the action is (remarks) - otherwise it could never
     // satisfy the "active opportunity needs a next action" rule and the user
@@ -128,6 +142,8 @@ public class FollowUpService {
                 .findById(request.getActivityTypeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Activity Type not found"));
 
+        requireSelectableActivityType(activityType, null);
+
         requireNextActionIfOpportunityFollowUp(opportunity, request);
 
         FollowUp followUp = FollowUp.builder()
@@ -166,16 +182,30 @@ public class FollowUpService {
 
     public List<FollowUp> findForExport(
             FollowUpSearchCriteria criteria, List<Long> ids, String sortBy, String sortDir) {
+        return findForExport(criteria, ids, null, sortBy, sortDir);
+    }
+
+    // Same scope and filters as the list. `ids` = exactly those rows;
+    // otherwise every matching row minus `excludeIds` (the "select all N
+    // matching records" selection). Both are AND-ed onto the scoped query.
+    public List<FollowUp> findForExport(
+            FollowUpSearchCriteria criteria, List<Long> ids, List<Long> excludeIds, String sortBy, String sortDir) {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
         accessControlService.requirePermission(currentEmployee, FOLLOWUP_EXPORT);
         List<Long> employeeIds = accessControlService.resolveVisibleEmployeeIds(currentEmployee, FOLLOWUP_VIEW);
 
-        Specification<FollowUp> spec = buildSpecification(criteria, employeeIds);
+        Specification<FollowUp> spec = SpecificationUtil.and(java.util.Arrays.asList(
+                buildSpecification(criteria, employeeIds),
+                ids != null && !ids.isEmpty() ? FollowUpSpecifications.hasIds(ids) : null,
+                FollowUpSpecifications.notInIds(excludeIds)
+        ));
 
-        if (ids != null && !ids.isEmpty()) {
-            Specification<FollowUp> idSpec = FollowUpSpecifications.hasIds(ids);
-            spec = (spec == null) ? idSpec : spec.and(idSpec);
+        long matching = followUpRepository.count(spec);
+
+        if (matching > EXPORT_MAX_ROWS) {
+            throw new IllegalArgumentException("This export would contain " + matching
+                    + " follow-ups; at most " + EXPORT_MAX_ROWS + " can be exported at once. Please narrow the filters.");
         }
 
         Sort sort = SortWhitelist.resolve(sortBy, sortDir, SORT_FIELDS, "scheduledDate");
@@ -310,6 +340,8 @@ public class FollowUpService {
 
         ActivityType activityType = activityTypeRepository.findById(request.getActivityTypeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Activity Type not found"));
+
+        requireSelectableActivityType(activityType, followUp.getActivityType());
 
         requireNextActionIfOpportunityFollowUp(opportunity, request);
 
