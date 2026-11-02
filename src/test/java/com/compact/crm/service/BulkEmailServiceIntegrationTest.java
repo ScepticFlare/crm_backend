@@ -129,8 +129,11 @@ class BulkEmailServiceIntegrationTest {
         a6 = lead("Zed Corp", "Zed", "a6@acme.test", empA);
         b1 = lead("Other Owner Co", "Bela", "b1@other.test", empB);
 
-        oppA1 = opportunityRepository.save(Opportunity.builder().title("Genset AMC 2027").lead(a1).build());
-        oppB1 = opportunityRepository.save(Opportunity.builder().title("Secret Deal").lead(b1).build());
+        // as conversion leaves them: a copy of the lead's contact on the opportunity (V14)
+        oppA1 = opportunityRepository.save(Opportunity.builder().title("Genset AMC 2027").lead(a1)
+                .contactPerson(a1.getContactPerson()).contactEmail(a1.getEmail()).build());
+        oppB1 = opportunityRepository.save(Opportunity.builder().title("Secret Deal").lead(b1)
+                .contactPerson(b1.getContactPerson()).contactEmail(b1.getEmail()).build());
 
         // every send is accepted unless a test says otherwise
         when(brevo.trySend(any(), any(), any(), any()))
@@ -166,6 +169,30 @@ class BulkEmailServiceIntegrationTest {
         assertThat(sendLogRepository.count()).isZero();
     }
 
+    // The draft editor shows a chosen recipient's values: they are given for
+    // the caller's own records only, never for one outside their scope.
+    @Test
+    void draftFieldValues_areGivenForAuthorizedRecordsOnly_andMatchWhatReviewRenders() {
+
+        BulkEmailPreviewResponse preview = bulk.preview(request(BulkEmailTarget.LEAD,
+                List.of(a1.getId(), a6.getId(), b1.getId()), "", ""));
+
+        assertThat(by(preview, a1).getMergeFields().get("contactPerson").value()).isEqualTo("Asha");
+        assertThat(by(preview, a1).getMergeFields().get("name").value()).isEqualTo("Asha");
+        assertThat(by(preview, a6).getMergeFields().get("companyName").value()).isEqualTo("Zed Corp");
+        assertThat(by(preview, b1).getMergeFields()).isNull();
+
+        // what the draft shows for a record is what Review renders for it
+        BulkEmailPreviewResponse review = bulk.preview(request(BulkEmailTarget.LEAD,
+                List.of(a1.getId(), a6.getId()), "For {{companyName}}", "Dear {{name}}"));
+
+        for (Lead l : List.of(a1, a6)) {
+            BulkEmailPreviewResponse.Recipient r = by(review, l);
+            assertThat(r.getRenderedSubject()).isEqualTo("For " + r.getMergeFields().get("companyName").value());
+            assertThat(r.getRenderedBody()).isEqualTo("Dear " + r.getMergeFields().get("name").value());
+        }
+    }
+
     @Test
     void manager_reachesTheirTeam_adminReachesEveryone() {
 
@@ -196,6 +223,39 @@ class BulkEmailServiceIntegrationTest {
     }
 
     @Test
+    void anOpportunityIsEmailedAtItsOwnContact_notTheLeadsOriginalOne() {
+
+        // the customer's contact changed after conversion - recorded on the opportunity only
+        oppA1.setContactPerson("Ravi");
+        oppA1.setContactEmail("ravi@acme.test");
+        opportunityRepository.save(oppA1);
+
+        BulkEmailPreviewResponse.Recipient r = byId(bulk.preview(request(BulkEmailTarget.OPPORTUNITY,
+                List.of(oppA1.getId()), "Hi", "Dear {{contactPerson}}")), oppA1.getId());
+
+        assertThat(r.getEmail()).isEqualTo("ravi@acme.test");
+        assertThat(r.getContactPerson()).isEqualTo("Ravi");
+        assertThat(r.getRenderedBody()).isEqualTo("Dear Ravi");
+    }
+
+    @Test
+    void eachRecipientGetsTheirOwnValues_neverTheFirstRecipients() {
+
+        BulkEmailPreviewResponse preview = bulk.preview(request(BulkEmailTarget.LEAD,
+                List.of(a1.getId(), a6.getId()), "For {{companyName}}", "Dear {{name}}"));
+
+        assertThat(by(preview, a1).getRenderedSubject()).isEqualTo("For Acme Ltd");
+        assertThat(by(preview, a1).getRenderedBody()).isEqualTo("Dear Asha");
+        assertThat(by(preview, a6).getRenderedSubject()).isEqualTo("For Zed Corp");
+        assertThat(by(preview, a6).getRenderedBody()).isEqualTo("Dear Zed");
+
+        sendNew(BulkEmailTarget.LEAD, List.of(a1.getId(), a6.getId()), "For {{companyName}}", "Dear {{name}}");
+
+        verify(brevo).trySend(eq("a1@acme.test"), eq("For Acme Ltd"), eq("Dear Asha"), any());
+        verify(brevo).trySend(eq("a6@acme.test"), eq("For Zed Corp"), eq("Dear Zed"), any());
+    }
+
+    @Test
     void anOpportunityPlaceholderIsFlaggedWhenEmailingLeads() {
 
         BulkEmailPreviewResponse preview = bulk.preview(request(BulkEmailTarget.LEAD,
@@ -216,7 +276,7 @@ class BulkEmailServiceIntegrationTest {
         assertThat(by(preview, a2).getExclusionCode()).isEqualTo("NO_EMAIL");
         assertThat(by(preview, a3).getExclusionCode()).isEqualTo("INVALID_EMAIL");
         assertThat(by(preview, a5).getExclusionCode()).isEqualTo("UNRESOLVED_PLACEHOLDER");
-        assertThat(by(preview, a5).getExclusionMessage()).contains("{{contactPerson}} is empty");
+        assertThat(by(preview, a5).getExclusionMessage()).contains("Contact person is missing");
         assertThat(preview.getEligibleCount()).isEqualTo(1);
         assertThat(preview.getExcludedCount()).isEqualTo(3);
     }
@@ -339,7 +399,7 @@ class BulkEmailServiceIntegrationTest {
                 "Hi {{contactPerson}}", "Offer: [[ADMIN: describe the AMC offer here]] and {{nope}}");
 
         assertThat(sent.getExcluded()).isEqualTo(1);
-        assertThat(sent.getResults().get(0).getDetail()).contains("Unknown placeholder {{nope}}").contains("[[...]]");
+        assertThat(sent.getResults().get(0).getDetail()).contains("Unsupported field \"nope\"").contains("[[...]]");
         verify(brevo, never()).trySend(any(), any(), any(), any());
     }
 

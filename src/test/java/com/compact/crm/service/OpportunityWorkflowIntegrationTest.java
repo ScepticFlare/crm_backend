@@ -942,6 +942,41 @@ class OpportunityWorkflowIntegrationTest {
         assertThat(followUpRepository.findByLeadId(lead.getId())).isEmpty();
     }
 
+    // Convert to Opportunity offers only active (admin-managed) activity
+    // types; the server enforces it too, and deactivating a type later never
+    // breaks the opportunity's existing next action.
+    @Test
+    void conversion_onlyAcceptsAnActiveActivityType_andALaterDeactivationKeepsHistoryReadable() {
+
+        ActivityType retired = activityTypeRepository.save(ActivityType.builder().name("Telex").build());
+        retired.setIsActive(false);
+        activityTypeRepository.save(retired);
+
+        OpportunityRequest withRetired = withNextAction(request("IN PROGRESS", future()), "Send the proposal",
+                LocalDateTime.now().plusDays(5));
+        withRetired.setNextActionActivityTypeId(retired.getId());
+
+        assertThatThrownBy(() -> opportunityService.convertLeadToOpportunity(saveLeadBare("RetiredType").getId(), withRetired))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Activity type \"Telex\" is inactive and cannot be selected.");
+
+        // converted with an active type, which an admin then deactivates
+        ActivityType visit = activityTypeRepository.save(ActivityType.builder().name("Site visit").build());
+        OpportunityRequest withVisit = withNextAction(request("IN PROGRESS", future()), "Visit the plant",
+                LocalDateTime.now().plusDays(5));
+        withVisit.setNextActionActivityTypeId(visit.getId());
+
+        Opportunity o = opportunityService.convertLeadToOpportunity(saveLeadBare("LaterRetired").getId(), withVisit);
+        visit.setIsActive(false);                         // what ActivityTypeService.deactivate does
+        activityTypeRepository.save(visit);
+
+        assertThat(pendingFollowUpsOf(o)).singleElement().satisfies(f -> {
+            assertThat(f.getActivityType().getName()).isEqualTo("Site visit");
+            assertThat(f.getActivityType().getIsActive()).isFalse();
+        });
+        assertThat(opportunityService.getOpportunityById(o.getId()).getNoNextAction()).isFalse();
+    }
+
     @Test
     void conversion_withInlineNextAction_createsOpportunityAndFollowUpTogether() {
 
@@ -986,24 +1021,40 @@ class OpportunityWorkflowIntegrationTest {
         assertThat(followUpRepository.findAll()).isEmpty();
     }
 
+    // The next-follow-up rule applies only to active and POSTPONED
+    // opportunities; WON, LOST and DROPPED need none.
     @Test
-    void terminalAndPostponedStages_doNotNeedANextAction() {
+    void onConversion_activeAndPostponedNeedANextAction_lostDroppedAndWonDoNot() {
 
-        for (String stage : List.of("WON", "POSTPONED")) {
+        for (String stage : List.of("IN PROGRESS", "POSTPONED")) {
 
-            Lead lead = saveLeadBare("Exempt " + stage);
+            Lead lead = saveLeadBare("NeedsNext " + stage);
+            OpportunityRequest r = request(stage, future());
 
-            Opportunity o = opportunityService.convertLeadToOpportunity(lead.getId(), request(stage, future()));
+            assertThatThrownBy(() -> opportunityService.convertLeadToOpportunity(lead.getId(), r))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("needs a pending follow-up");
+
+            Opportunity o = opportunityService.convertLeadToOpportunity(lead.getId(),
+                    withNextAction(r, "Check in after the decision", LocalDateTime.now().plusDays(10)));
 
             assertThat(o.getSalesStage().getName()).isEqualTo(stage);
             assertThat(o.getNoNextAction()).isFalse();
+            assertThat(o.getNextFollowUpDate()).isNotNull();
         }
 
-        Lead lost = saveLeadBare("Exempt LOST");
-        OpportunityRequest r = request("LOST", future());
-        r.setLostReason("Chose a competitor");
+        for (String stage : List.of("LOST", "DROPPED", "WON")) {
 
-        assertThat(opportunityService.convertLeadToOpportunity(lost.getId(), r).getId()).isNotNull();
+            Lead lead = saveLeadBare("Exempt " + stage);
+            OpportunityRequest r = request(stage, future());
+            r.setLostReason("Chose a competitor");
+
+            Opportunity o = opportunityService.convertLeadToOpportunity(lead.getId(), r);
+
+            assertThat(o.getSalesStage().getName()).isEqualTo(stage);
+            assertThat(o.getNoNextAction()).as(stage).isFalse();
+            assertThat(followUpRepository.findByOpportunityId(o.getId())).as(stage).isEmpty();
+        }
     }
 
     @Test
@@ -1025,17 +1076,308 @@ class OpportunityWorkflowIntegrationTest {
     }
 
     @Test
-    void legacyActiveOpportunityWithoutFollowUp_canStillBeClosedOrPostponed() {
+    void postponingAnOpportunityWithoutFollowUp_isRejected_untilOneIsSupplied() {
 
-        Opportunity won = convertBare("LegacyToWon", "IN PROGRESS");
+        Opportunity o = convertBare("LegacyToPostponed", "IN PROGRESS");
 
-        assertThat(opportunityService.updateOpportunity(won.getId(), request("WON", null))
-                .getSalesStage().getName()).isEqualTo("WON");
+        assertThatThrownBy(() -> opportunityService.updateOpportunity(o.getId(), request("POSTPONED", null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("needs a pending follow-up");
 
-        Opportunity postponed = convertBare("LegacyToPostponed", "IN PROGRESS");
+        assertThat(opportunityRepository.findById(o.getId()).orElseThrow().getSalesStage().getName())
+                .isEqualTo("IN PROGRESS");
 
-        assertThat(opportunityService.updateOpportunity(postponed.getId(), request("POSTPONED", null))
-                .getSalesStage().getName()).isEqualTo("POSTPONED");
+        Opportunity moved = opportunityService.updateOpportunity(o.getId(),
+                withNextAction(request("POSTPONED", null), "Review the account", LocalDateTime.now().plusDays(30)));
+
+        assertThat(moved.getSalesStage().getName()).isEqualTo("POSTPONED");
+        assertThat(moved.getNoNextAction()).isFalse();
+    }
+
+    @Test
+    void closingAsLostOrDropped_needsNoFollowUp_isNotFlagged_andReopeningNeedsOneAgain() {
+
+        for (String stage : List.of("LOST", "DROPPED")) {
+
+            Opportunity o = convertBare("Close" + stage, "IN PROGRESS");
+
+            OpportunityRequest close = request(stage, null);
+            close.setLostReason("Budget withdrawn");
+
+            Opportunity closed = opportunityService.updateOpportunity(o.getId(), close);
+
+            assertThat(closed.getSalesStage().getName()).isEqualTo(stage);
+            assertThat(opportunityService.getOpportunityById(o.getId()).getNoNextAction()).as(stage).isFalse();
+            assertThat(opportunityService.getWorkflowAlerts().noNextAction())
+                    .extracting(WorkflowAlertsResponse.Item::id).as(stage).doesNotContain(o.getId());
+
+            // still editable while closed, without a follow-up
+            OpportunityRequest edit = request(stage, null);
+            edit.setLostReason("Budget withdrawn - confirmed");
+            opportunityService.updateOpportunity(o.getId(), edit);
+
+            // back to In Progress: the rule applies again
+            assertThatThrownBy(() -> opportunityService.updateOpportunity(o.getId(), request("IN PROGRESS", future())))
+                    .as(stage)
+                    .hasMessageContaining("needs a pending follow-up");
+
+            Opportunity reopened = opportunityService.updateOpportunity(o.getId(),
+                    withNextAction(request("IN PROGRESS", future()), "Call again", LocalDateTime.now().plusDays(2)));
+            assertThat(reopened.getNoNextAction()).isFalse();
+        }
+    }
+
+    @Test
+    void activeAndPostponedWithoutAFollowUp_areOnTheDashboard_closedOnesAreNot() {
+
+        Opportunity active = convertBare("AlertActive", "IN PROGRESS");
+
+        Opportunity postponed = convert("AlertPostponed", "IN PROGRESS");
+        opportunityService.updateOpportunity(postponed.getId(),
+                withNextAction(request("POSTPONED", null), "Revisit", LocalDateTime.now().plusDays(5)));
+        lapseFollowUps(postponed);
+
+        Opportunity lost = convertBare("AlertLost", "IN PROGRESS");
+        OpportunityRequest toLost = request("LOST", null);
+        toLost.setLostReason("Price");
+        opportunityService.updateOpportunity(lost.getId(), toLost);
+
+        assertThat(opportunityService.getWorkflowAlerts().noNextAction())
+                .extracting(WorkflowAlertsResponse.Item::id)
+                .contains(active.getId(), postponed.getId())
+                .doesNotContain(lost.getId());
+
+        assertThat(opportunityService.getOpportunityById(postponed.getId()).getNoNextAction()).isTrue();
+        assertThat(opportunityService.getOpportunityById(lost.getId()).getNoNextAction()).isFalse();
+    }
+
+    // ---------------------------------------------------------------- WON is exempt
+
+    @Test
+    void won_needsNoNextFollowUp_andIsNeitherFlaggedNorOnTheDashboard() {
+
+        Lead lead = saveLeadBare("WonDirect");
+        Opportunity converted = opportunityService.convertLeadToOpportunity(lead.getId(), request("WON", future()));
+
+        assertThat(converted.getNoNextAction()).isFalse();
+
+        Opportunity closed = convertBare("ClosedWon", "IN PROGRESS");
+        Opportunity won = opportunityService.updateOpportunity(closed.getId(), request("WON", null));
+
+        assertThat(won.getSalesStage().getName()).isEqualTo("WON");
+        assertThat(opportunityService.getOpportunityById(won.getId()).getNoNextAction()).isFalse();
+        assertThat(opportunityService.getWorkflowAlerts().noNextAction())
+                .extracting(WorkflowAlertsResponse.Item::id)
+                .doesNotContain(converted.getId(), won.getId());
+    }
+
+    // ---------------------------------------------------------------- completing a follow-up
+
+    private FollowUp pendingOn(Opportunity o, String what, LocalDateTime when) {
+
+        FollowUpRequest r = new FollowUpRequest();
+        r.setOpportunityId(o.getId());
+        r.setEmployeeId(admin.getId());
+        r.setActivityTypeId(activityType.getId());
+        r.setStatus(FollowUpStatus.PENDING);
+        r.setScheduledDate(when);
+        r.setRemarks(what);
+        return followUpService.createFollowUp(r);
+    }
+
+    private FollowUpRequest completing(FollowUp f) {
+
+        FollowUpRequest r = new FollowUpRequest();
+        r.setOpportunityId(f.getOpportunity().getId());
+        r.setEmployeeId(f.getEmployee().getId());
+        r.setActivityTypeId(f.getActivityType().getId());
+        r.setStatus(FollowUpStatus.COMPLETED);
+        r.setScheduledDate(f.getScheduledDate());
+        r.setCompletedDate(LocalDateTime.now());
+        r.setRemarks(f.getRemarks());
+        return r;
+    }
+
+    private List<FollowUp> pendingFollowUpsOf(Opportunity o) {
+        return followUpRepository.findByOpportunityId(o.getId()).stream()
+                .filter(f -> f.getStatus() == FollowUpStatus.PENDING).toList();
+    }
+
+    @Test
+    void completingTheOnlyFollowUp_ofAnActiveOpportunity_needsTheNextOne_andIsRolledBackWithout() {
+
+        Opportunity o = convertBare("CompleteActive", "IN PROGRESS");
+        FollowUp only = pendingOn(o, "Send the quotation", LocalDateTime.now().plusDays(1));
+
+        assertThatThrownBy(() -> followUpService.updateFollowUp(only.getId(), completing(only)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("next follow-up date");
+
+        assertThat(followUpRepository.findById(only.getId()).orElseThrow().getStatus())
+                .isEqualTo(FollowUpStatus.PENDING);
+
+        LocalDateTime next = LocalDateTime.now().plusDays(7).withNano(0);
+        FollowUpRequest done = completing(only);
+        done.setNextActionDescription("  Negotiate the final price ");
+        done.setNextFollowUpDate(next);
+        done.setNextActionActivityTypeId(activityType.getId());
+
+        followUpService.updateFollowUp(only.getId(), done);
+
+        assertThat(followUpRepository.findById(only.getId()).orElseThrow().getStatus())
+                .isEqualTo(FollowUpStatus.COMPLETED);
+        assertThat(pendingFollowUpsOf(o)).singleElement().satisfies(f -> {
+            assertThat(f.getRemarks()).isEqualTo("Negotiate the final price");
+            assertThat(f.getScheduledDate()).isEqualTo(next);
+        });
+        assertThat(opportunityService.getOpportunityById(o.getId()).getNoNextAction()).isFalse();
+
+        // saving the completed follow-up again creates nothing more
+        followUpService.updateFollowUp(only.getId(), done);
+        assertThat(pendingFollowUpsOf(o)).hasSize(1);
+    }
+
+    @Test
+    void completing_withAnIdenticalNextAlreadyScheduled_createsNoDuplicate() {
+
+        Opportunity o = convertBare("NoDupNext", "IN PROGRESS");
+        LocalDateTime next = LocalDateTime.now().plusDays(5).withNano(0);
+
+        FollowUp current = pendingOn(o, "Site visit", LocalDateTime.now().plusDays(1));
+        pendingOn(o, "Send the revised quotation", next);
+
+        FollowUpRequest done = completing(current);
+        done.setNextActionDescription("Send the revised quotation");
+        done.setNextFollowUpDate(next);
+        done.setNextActionActivityTypeId(activityType.getId());
+
+        followUpService.updateFollowUp(current.getId(), done);
+
+        assertThat(pendingFollowUpsOf(o)).hasSize(1);
+    }
+
+    @Test
+    void completing_whenAnotherUpcomingFollowUpExists_asksForNothing() {
+
+        Opportunity o = convertBare("OtherExists", "IN PROGRESS");
+        FollowUp current = pendingOn(o, "Call the buyer", LocalDateTime.now().plusDays(1));
+        pendingOn(o, "Demo at the plant", LocalDateTime.now().plusDays(9));
+
+        followUpService.updateFollowUp(current.getId(), completing(current));
+
+        assertThat(pendingFollowUpsOf(o)).hasSize(1);
+    }
+
+    @Test
+    void completingTheLastFollowUp_onAPostponedOpportunity_needsTheNextOne() {
+
+        Opportunity postponed = convert("CompletePostponed", "IN PROGRESS");
+        opportunityService.updateOpportunity(postponed.getId(),
+                withNextAction(request("POSTPONED", null), "Revisit after budget", LocalDateTime.now().plusDays(60)));
+        lapseFollowUps(postponed);
+        FollowUp only = pendingOn(postponed, "Revisit after budget", LocalDateTime.now().plusDays(60));
+
+        assertThatThrownBy(() -> followUpService.updateFollowUp(only.getId(), completing(only)))
+                .hasMessageContaining("next follow-up date");
+
+        FollowUpRequest done = completing(only);
+        done.setNextActionDescription("Call the buyer");
+        done.setNextFollowUpDate(LocalDateTime.now().plusDays(90).withNano(0));
+        done.setNextActionActivityTypeId(activityType.getId());
+        followUpService.updateFollowUp(only.getId(), done);
+
+        assertThat(pendingFollowUpsOf(postponed)).singleElement()
+                .satisfies(f -> assertThat(f.getRemarks()).isEqualTo("Call the buyer"));
+    }
+
+    @Test
+    void completingTheLastFollowUp_onALostDroppedOrWonOpportunity_asksForNothing() {
+
+        for (String stage : List.of("LOST", "DROPPED")) {
+
+            Opportunity o = convertBare("CompleteClosed" + stage, "IN PROGRESS");
+            FollowUp only = pendingOn(o, "Final courtesy call", LocalDateTime.now().plusDays(1));
+
+            OpportunityRequest close = request(stage, null);
+            close.setLostReason("Chose a competitor");
+            opportunityService.updateOpportunity(o.getId(), close);
+
+            followUpService.updateFollowUp(only.getId(), completing(only));
+
+            assertThat(followUpRepository.findById(only.getId()).orElseThrow().getStatus())
+                    .as(stage).isEqualTo(FollowUpStatus.COMPLETED);
+            assertThat(pendingFollowUpsOf(o)).as(stage).isEmpty();
+        }
+
+        Opportunity won = convertBare("CompleteWon", "IN PROGRESS");
+        FollowUp wonOnly = pendingOn(won, "Hand over to delivery", LocalDateTime.now().plusDays(1));
+        opportunityService.updateOpportunity(won.getId(), request("WON", null));
+
+        followUpService.updateFollowUp(wonOnly.getId(), completing(wonOnly));
+
+        assertThat(followUpRepository.findById(wonOnly.getId()).orElseThrow().getStatus())
+                .isEqualTo(FollowUpStatus.COMPLETED);
+        assertThat(pendingFollowUpsOf(won)).isEmpty();
+    }
+
+    @Test
+    void completingALeadFollowUp_countsForTheOpportunityConvertedFromIt() {
+
+        Opportunity o = convert("LeadSide", "IN PROGRESS");   // its only next action is on the lead
+        FollowUp leadFollowUp = followUpRepository.findByLeadId(o.getLead().getId()).stream()
+                .filter(f -> f.getStatus() == FollowUpStatus.PENDING).findFirst().orElseThrow();
+
+        FollowUpRequest r = new FollowUpRequest();
+        r.setLeadId(o.getLead().getId());
+        r.setEmployeeId(leadFollowUp.getEmployee().getId());
+        r.setActivityTypeId(leadFollowUp.getActivityType().getId());
+        r.setStatus(FollowUpStatus.COMPLETED);
+        r.setScheduledDate(leadFollowUp.getScheduledDate());
+        r.setRemarks(leadFollowUp.getRemarks());
+
+        assertThatThrownBy(() -> followUpService.updateFollowUp(leadFollowUp.getId(), r))
+                .hasMessageContaining("next follow-up date");
+    }
+
+    @Test
+    void editingWithAnExistingFollowUp_reusesIt_andCreatesNoDuplicate() {
+
+        Opportunity o = convert("NoDuplicates", "IN PROGRESS");
+        long followUpsBefore = followUpRepository.count();
+
+        opportunityService.updateOpportunity(o.getId(), request("IN PROGRESS", future()));
+        opportunityService.updateOpportunity(o.getId(), request("POSTPONED", null));
+
+        assertThat(followUpRepository.count()).isEqualTo(followUpsBefore);
+        assertThat(opportunityService.getOpportunityById(o.getId()).getNextFollowUpDate()).isNotNull();
+    }
+
+    @Test
+    void anOpportunityInAnyStageWithoutFollowUp_isFlaggedAndCountedOnTheDashboard() {
+
+        Opportunity o = convert("FlaggedPostponed", "IN PROGRESS");
+        opportunityService.updateOpportunity(o.getId(), request("POSTPONED", null));
+        lapseFollowUps(o);
+
+        assertThat(opportunityService.getOpportunityById(o.getId()).getNoNextAction()).isTrue();
+        assertThat(opportunityService.getWorkflowAlerts().noNextAction())
+                .extracting(WorkflowAlertsResponse.Item::id).contains(o.getId());
+    }
+
+    // The opportunity's (and its lead's) follow-ups are no longer pending -
+    // what happens when the next action is completed and none is scheduled.
+    private void lapseFollowUps(Opportunity o) {
+
+        for (FollowUp f : followUpRepository.findAll()) {
+
+            boolean mine = (f.getOpportunity() != null && f.getOpportunity().getId().equals(o.getId()))
+                    || (f.getLead() != null && f.getLead().getId().equals(o.getLead().getId()));
+
+            if (mine) {
+                f.setStatus(FollowUpStatus.COMPLETED);
+                followUpRepository.save(f);
+            }
+        }
     }
 
     @Test
@@ -1049,8 +1391,9 @@ class OpportunityWorkflowIntegrationTest {
     @Test
     void resumingAPostponedOpportunity_needsANextAction() {
 
-        Opportunity o = convertBare("ResumeNeeds", "IN PROGRESS");
+        Opportunity o = convert("ResumeNeeds", "IN PROGRESS");
         opportunityService.updateOpportunity(o.getId(), request("POSTPONED", null));
+        lapseFollowUps(o);
 
         ReturnToInProgressRequest bare = new ReturnToInProgressRequest();
         bare.setExpectedClosingDate(future());
@@ -1077,12 +1420,70 @@ class OpportunityWorkflowIntegrationTest {
     @Test
     void movingAPostponedOpportunityBackToActiveByEdit_needsANextAction() {
 
-        Opportunity o = convertBare("EditResume", "IN PROGRESS");
+        Opportunity o = convert("EditResume", "IN PROGRESS");
         opportunityService.updateOpportunity(o.getId(), request("POSTPONED", null));
+        lapseFollowUps(o);
 
         assertThatThrownBy(() -> opportunityService.updateOpportunity(o.getId(), request("IN PROGRESS", future())))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("needs a pending follow-up");
+    }
+
+    // ---------------------------------------------------------------- mandatory value
+
+    @Test
+    void conversion_withoutAValidValue_isRejected_andNothingIsCreated() {
+
+        Lead lead = saveLead("NoValue");
+        long before = opportunityRepository.count();
+
+        for (Double bad : java.util.Arrays.asList(null, -1.0, Double.NaN, Double.POSITIVE_INFINITY)) {
+
+            OpportunityRequest r = request("IN PROGRESS", future());
+            r.setProductValue(bad);
+
+            assertThatThrownBy(() -> opportunityService.convertLeadToOpportunity(lead.getId(), r))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Opportunity value");
+        }
+
+        assertThat(opportunityRepository.count()).isEqualTo(before);
+    }
+
+    @Test
+    void editing_requiresAValue_neverTurnsAMissingOneIntoZero() {
+
+        Opportunity o = convert("EditValue", "IN PROGRESS");
+
+        OpportunityRequest cleared = request("IN PROGRESS", future());
+        cleared.setProductValue(null);
+
+        assertThatThrownBy(() -> opportunityService.updateOpportunity(o.getId(), cleared))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Opportunity value is required.");
+
+        assertThat(opportunityRepository.findById(o.getId()).orElseThrow().getProductValue()).isEqualTo(1000.0);
+
+        // zero is a stated value (not "missing") and is accepted
+        OpportunityRequest zero = request("IN PROGRESS", future());
+        zero.setProductValue(0.0);
+        assertThat(opportunityService.updateOpportunity(o.getId(), zero).getProductValue()).isEqualTo(0.0);
+    }
+
+    @Test
+    void aHistoricalOpportunityWithoutAValue_stillLoads_butAnEditMustSupplyOne() {
+
+        Opportunity old = saveHistorical("NullValue", "IN PROGRESS", future());
+        old.setProductValue(null);
+        opportunityRepository.save(old);
+
+        assertThat(opportunityService.getOpportunityById(old.getId()).getProductValue()).isNull();
+
+        OpportunityRequest edit = withNextAction(request("IN PROGRESS", future()), "Call back", LocalDateTime.now().plusDays(1));
+        edit.setProductValue(null);
+
+        assertThatThrownBy(() -> opportunityService.updateOpportunity(old.getId(), edit))
+                .hasMessage("Opportunity value is required.");
     }
 
     @Test

@@ -92,10 +92,11 @@ public class Opportunity {
     private List<OpportunityBattery> opportunityBatteries = new ArrayList<>();
 
     // Not persisted. Set by OpportunityService for responses: true when the
-    // Opportunity is ACTIVE and has no qualifying follow-up (pending, scheduled
-    // now or later, with a described next action - see service.FollowUpRules -
-    // on itself or its originating Lead). That is the state saving it is
-    // rejected in. Null when it was not computed.
+    // Opportunity (active or POSTPONED) has no qualifying follow-up (pending,
+    // scheduled now or later, with a described next action - see
+    // service.FollowUpRules - on itself or its originating Lead), i.e. no next
+    // follow-up date. That is the state saving it is rejected in. Null when it
+    // was not computed.
     @Transient
     private Boolean noNextAction;
 

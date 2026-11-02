@@ -18,6 +18,7 @@ import com.compact.crm.enums.ActivityAction;
 import com.compact.crm.enums.ActivityModule;
 import com.compact.crm.enums.LeadStatus;
 import com.compact.crm.enums.LeadValidity;
+import com.compact.crm.exception.IntegrationNotConfiguredException;
 import com.compact.crm.exception.ResourceNotFoundException;
 import com.compact.crm.repository.BatteryRepository;
 import com.compact.crm.repository.EmployeeRepository;
@@ -26,6 +27,7 @@ import com.compact.crm.repository.LeadRepository;
 import com.compact.crm.repository.LeadSourceMasterRepository;
 import com.compact.crm.repository.ProductRepository;
 import com.compact.crm.security.PublicLeadRateLimiter;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -57,8 +59,14 @@ public class PublicLeadService {
     // Configurable rather than a hard-coded employee id, per design: set
     // PUBLIC_LEAD_ASSIGNEE_EMAIL in the environment to point this at a
     // different Employee (e.g. a real intake queue) without a code change.
-    @Value("${crm.public-lead.assignee-email}")
+    // Optional for startup: when unset the CRM still runs, and only public
+    // submissions are refused (503) - never accepted unassigned or misassigned.
+    @Value("${crm.public-lead.assignee-email:}")
     private String publicLeadAssigneeEmail;
+
+    // Shown to the public visitor; the reason is only in the server log.
+    static final String UNAVAILABLE_MESSAGE =
+            "The enquiry form is temporarily unavailable. Please try again later.";
 
     private final EmployeeRepository employeeRepository;
     private final IndustryRepository industryRepository;
@@ -69,10 +77,24 @@ public class PublicLeadService {
     private final ActivityLogService activityLogService;
     private final PublicLeadRateLimiter rateLimiter;
 
+    @PostConstruct
+    void warnIfAssigneeNotConfigured() {
+
+        if (isBlank(publicLeadAssigneeEmail)) {
+            log.warn("Public lead form is DISABLED: PUBLIC_LEAD_ASSIGNEE_EMAIL is not set. "
+                    + "The CRM runs normally, but POST /api/public/leads is refused until it is configured.");
+        }
+    }
+
     @Transactional
     public PublicLeadResponse createPublicLead(PublicLeadRequest request, String clientIp) {
 
         rateLimiter.checkAllowed(clientIp);
+
+        if (isBlank(publicLeadAssigneeEmail)) {
+            log.warn("Public lead submission refused from ip={}: PUBLIC_LEAD_ASSIGNEE_EMAIL is not set", clientIp);
+            throw new IntegrationNotConfiguredException(UNAVAILABLE_MESSAGE);
+        }
 
         // Honeypot: a real visitor never populates this hidden field. Return
         // a normal-looking success response without creating a Lead or
@@ -104,9 +126,12 @@ public class PublicLeadService {
 
         String otherIndustryDetail = resolveOtherIndustryDetail(industry, request.getOtherIndustryDetail());
 
-        Employee assignee = employeeRepository.findByEmail(publicLeadAssigneeEmail)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Public lead assignee is not configured correctly."));
+        Employee assignee = employeeRepository.findByEmail(publicLeadAssigneeEmail.trim())
+                .orElseThrow(() -> {
+                    log.error("Public lead submission refused: no employee has the configured "
+                            + "PUBLIC_LEAD_ASSIGNEE_EMAIL address");
+                    return new IntegrationNotConfiguredException(UNAVAILABLE_MESSAGE);
+                });
 
         Lead lead = Lead.builder()
                 .companyName(request.getCompanyName().trim())
@@ -259,6 +284,10 @@ public class PublicLeadService {
                             .build()
             );
         }
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     private String blankToNull(String value) {

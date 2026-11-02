@@ -200,6 +200,23 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(error, HttpStatus.UNAUTHORIZED);
     }
 
+    // An optional integration this request needs is not configured here (see
+    // IntegrationNotConfiguredException) - the feature is unavailable, not
+    // broken, so 503 rather than the 502 below. More specific than
+    // IllegalStateException, so Spring picks this handler for it.
+    @ExceptionHandler(IntegrationNotConfiguredException.class)
+    public ResponseEntity<ApiError> handleIntegrationNotConfigured(IntegrationNotConfiguredException ex) {
+
+        ApiError error = new ApiError(
+                LocalDateTime.now().toString(),
+                HttpStatus.SERVICE_UNAVAILABLE.value(),
+                HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase(),
+                ex.getMessage()
+        );
+
+        return new ResponseEntity<>(error, HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
     // Email compose/send failures (see service.LeadEmailService.sendMail) -
     // a misconfigured or unreachable SMTP provider, or a malformed message.
     // Mapped to 502 (this server, acting as a client to the mail provider,

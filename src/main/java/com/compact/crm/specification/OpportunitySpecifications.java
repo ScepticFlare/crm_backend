@@ -260,6 +260,15 @@ public final class OpportunitySpecifications {
         return (root, query, cb) -> cb.equal(root.get("salesStage").get("stageType"), stageType);
     }
 
+    // Opportunities that must have a next follow-up: an active stage or
+    // POSTPONED (see OpportunityWorkflow.requiresNextFollowUp).
+    public static Specification<Opportunity> requiresNextFollowUp() {
+
+        return (root, query, cb) -> cb.or(
+                activePredicate(root, cb),
+                cb.equal(root.get("salesStage").get("stageType"), SalesStageType.POSTPONED));
+    }
+
     // Active Opportunity whose expected closing date is before `today`.
     public static Specification<Opportunity> closingDateExpired(LocalDate today) {
 

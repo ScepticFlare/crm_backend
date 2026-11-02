@@ -26,6 +26,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -302,6 +303,9 @@ public class FollowUpService {
         return followUp;
     }
 
+    // Transactional: completing a follow-up and scheduling the next one are
+    // saved together or not at all.
+    @Transactional
     public FollowUp updateFollowUp(Long id, FollowUpRequest request) {
 
         FollowUp followUp = getAuthorizedFollowUp(id, FOLLOWUP_MANAGE);
@@ -345,6 +349,12 @@ public class FollowUpService {
 
         requireNextActionIfOpportunityFollowUp(opportunity, request);
 
+        boolean justCompleted = previousStatus != FollowUpStatus.COMPLETED
+                && request.getStatus() == FollowUpStatus.COMPLETED;
+
+        // Decided (and rejected) before anything is changed.
+        FollowUpRequest next = justCompleted ? nextAfterCompletion(followUp, lead, opportunity, request) : null;
+
         followUp.setLead(lead);
         followUp.setOpportunity(opportunity);
         followUp.setEmployee(employee);
@@ -356,8 +366,9 @@ public class FollowUpService {
 
         FollowUp saved = followUpRepository.save(followUp);
 
-        boolean justCompleted = previousStatus != FollowUpStatus.COMPLETED
-                && saved.getStatus() == FollowUpStatus.COMPLETED;
+        if (next != null) {
+            createFollowUp(next);
+        }
 
         activityLogService.log(
                 currentUserService.getCurrentEmployee(),
@@ -368,6 +379,97 @@ public class FollowUpService {
         );
 
         return saved;
+    }
+
+    // Completing a follow-up must not take its opportunity off the radar: an
+    // opportunity that still needs a next follow-up (active or POSTPONED - see
+    // OpportunityWorkflow.requiresNextFollowUp) and has no OTHER qualifying
+    // one must get the next follow-up with this request, or the completion is
+    // rejected. A lead's follow-up counts for the opportunity converted from
+    // that lead, so completing it is checked the same way. Returns the
+    // follow-up to create (null: nothing to create). Nothing is duplicated:
+    // when an identical pending follow-up (same opportunity, date and next
+    // action - e.g. a resubmitted form) already exists, nothing is created,
+    // and nothing is asked for when another qualifying one exists.
+    private FollowUpRequest nextAfterCompletion(
+            FollowUp completing, Lead lead, Opportunity opportunity, FollowUpRequest request) {
+
+        Opportunity target = opportunity != null ? opportunity
+                : lead == null ? null : opportunityRepository.findByLeadId(lead.getId()).orElse(null);
+
+        if (target == null || !OpportunityWorkflow.requiresNextFollowUp(target)) {
+            return null;
+        }
+
+        String description = request.getNextActionDescription();
+        LocalDateTime when = request.getNextFollowUpDate();
+        Long activityTypeId = request.getNextActionActivityTypeId();
+
+        boolean supplied = (description != null && !description.isBlank()) || when != null || activityTypeId != null;
+
+        if (!supplied) {
+
+            if (!hasOtherQualifyingFollowUp(target, completing.getId())) {
+                throw new IllegalArgumentException(COMPLETION_NEEDS_NEXT_MESSAGE);
+            }
+
+            return null;
+        }
+
+        if (!FollowUpRules.hasDescription(description)) {
+            throw new IllegalArgumentException(FollowUpRules.DESCRIPTION_REQUIRED_MESSAGE);
+        }
+
+        if (when == null || activityTypeId == null) {
+            throw new IllegalArgumentException(
+                    "Please give the next action together with its follow-up date and activity type.");
+        }
+
+        if (when.isBefore(com.compact.crm.util.BusinessClock.now())) {
+            throw new IllegalArgumentException("The next follow-up date must be now or in the future.");
+        }
+
+        String remarks = description.trim();
+
+        boolean alreadyScheduled = followUpRepository.findByOpportunityId(target.getId()).stream()
+                .anyMatch(f -> !f.getId().equals(completing.getId())
+                        && f.getStatus() == FollowUpStatus.PENDING
+                        && when.equals(f.getScheduledDate())
+                        && f.getRemarks() != null && remarks.equals(f.getRemarks().trim()));
+
+        if (alreadyScheduled) {
+            return null;
+        }
+
+        FollowUpRequest next = new FollowUpRequest();
+        next.setOpportunityId(target.getId());
+        next.setEmployeeId(request.getEmployeeId());
+        next.setActivityTypeId(activityTypeId);
+        next.setStatus(FollowUpStatus.PENDING);
+        next.setScheduledDate(when);
+        next.setRemarks(remarks);
+
+        return next;
+    }
+
+    static final String COMPLETION_NEEDS_NEXT_MESSAGE =
+            "This opportunity has no other upcoming follow-up. Enter the next follow-up date and time, "
+                    + "activity type and next action to complete this one.";
+
+    // A qualifying follow-up (FollowUpRules: pending, future, described) on
+    // the opportunity or its originating lead, other than `excludeId`.
+    private boolean hasOtherQualifyingFollowUp(Opportunity opportunity, Long excludeId) {
+
+        LocalDateTime now = com.compact.crm.util.BusinessClock.now();
+
+        List<FollowUp> candidates = new ArrayList<>(followUpRepository.findByOpportunityId(opportunity.getId()));
+
+        if (opportunity.getLead() != null) {
+            candidates.addAll(followUpRepository.findByLeadId(opportunity.getLead().getId()));
+        }
+
+        return candidates.stream()
+                .anyMatch(f -> !f.getId().equals(excludeId) && FollowUpRules.qualifies(f, now));
     }
 
     public List<FollowUp> getFollowUpsByLead(Long leadId) {

@@ -7,12 +7,13 @@ import lombok.*;
 
 import java.util.List;
 
-// Body for POST /api/leads/{id}/email/send. subject/body are the final,
-// already-reviewed text the user saw in the composer (placeholders already
-// substituted client-side from the preview response) - the backend does not
-// re-render from templateId, it sends exactly what's here. templateId is
-// carried through only so the send can be attributed to a template if it's
-// worth knowing later; it is never re-fetched to override subject/body.
+// Body for POST /api/leads/{id}/email/send. subject/body are the reviewed
+// text the user saw in the composer. Any merge field still in it (one
+// inserted after the preview) is resolved against this lead at send time,
+// and an unresolved one is refused - see EmailPlaceholderRenderer. The
+// backend does not re-render from templateId; templateId is carried through
+// only so the send can be attributed to a template if it's worth knowing
+// later; it is never re-fetched to override subject/body.
 @Getter
 @Setter
 @NoArgsConstructor

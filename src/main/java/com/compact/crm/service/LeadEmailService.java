@@ -67,14 +67,18 @@ public class LeadEmailService {
         Lead lead = getAuthorizedLead(leadId);
         EmailTemplate template = resolveTemplate(type, templateId);
 
-        String subject = template != null ? renderPlaceholders(template.getSubject(), lead) : "";
-        String body = template != null ? renderPlaceholders(template.getBody(), lead) : "";
+        EmailPlaceholderRenderer.Rendered subject =
+                EmailPlaceholderRenderer.render(template != null ? template.getSubject() : "", lead, null);
+        EmailPlaceholderRenderer.Rendered body =
+                EmailPlaceholderRenderer.render(template != null ? template.getBody() : "", lead, null);
 
         return new EmailPreviewResponse(
                 template != null ? template.getId() : null,
-                subject,
-                body,
-                suggestDocuments(type, lead)
+                subject.text(),
+                body.text(),
+                suggestDocuments(type, lead),
+                EmailPlaceholderRenderer.issuesOf(subject, body),
+                EmailPlaceholderRenderer.fieldValues(lead, null)
         );
     }
 
@@ -91,6 +95,20 @@ public class LeadEmailService {
                     "The message still contains an unfinished [[...]] section. Complete or remove it before sending.");
         }
 
+        // Merge fields still in the text (inserted after the preview, or left
+        // there because this lead had no value) are resolved here, against
+        // this authorized lead only. Anything unresolved is refused rather
+        // than sent as a raw {{token}} or a blank.
+        EmailPlaceholderRenderer.Rendered subject = EmailPlaceholderRenderer.render(request.getSubject(), lead, null);
+        EmailPlaceholderRenderer.Rendered body = EmailPlaceholderRenderer.render(request.getBody(), lead, null);
+        List<String> issues = EmailPlaceholderRenderer.issuesOf(subject, body);
+
+        if (!issues.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "This email cannot be sent yet: " + String.join("; ", issues)
+                            + ". Edit the message, or add the missing details to the lead.");
+        }
+
         // The do-not-email list applies to every customer-facing send path.
         if (suppressionService.isSuppressed(lead.getEmail())) {
             throw new IllegalArgumentException("This email address is on the do-not-email list.");
@@ -98,7 +116,7 @@ public class LeadEmailService {
 
         List<Document> documents = resolveDocuments(request.getDocumentIds());
 
-        sendMail(lead.getEmail(), request.getSubject(), request.getBody(), documents);
+        sendMail(lead.getEmail(), subject.text(), body.text(), documents);
 
         activityLogService.log(
                 currentUserService.getCurrentEmployee(),
@@ -122,6 +140,7 @@ public class LeadEmailService {
 
         List<Long> eligible = new ArrayList<>();
         List<Long> ineligible = new ArrayList<>();
+        Map<Long, BulkEmailEligibilityResponse.Recipient> recipients = new LinkedHashMap<>();
 
         for (Long id : leadIds) {
 
@@ -134,9 +153,13 @@ public class LeadEmailService {
             }
 
             eligible.add(id);
+
+            Lead lead = leadOpt.get();
+            recipients.put(id, new BulkEmailEligibilityResponse.Recipient(
+                    lead.getCompanyName(), lead.getContactPerson(), EmailPlaceholderRenderer.fieldValues(lead, null)));
         }
 
-        return new BulkEmailEligibilityResponse(eligible, ineligible, eligible.size(), ineligible.size());
+        return new BulkEmailEligibilityResponse(eligible, ineligible, eligible.size(), ineligible.size(), recipients);
     }
 
     // Bulk Keep in Touch only (per the business requirement - different
@@ -155,6 +178,9 @@ public class LeadEmailService {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
         accessControlService.requirePermission(currentEmployee, EMAIL_SEND);
+
+        // Refused as a whole, not reported lead by lead as "Send failed".
+        brevoEmailClient.requireConfigured();
 
         List<Document> documents = resolveDocuments(request.getDocumentIds());
 
@@ -192,12 +218,21 @@ public class LeadEmailService {
                 continue;
             }
 
+            // Each lead's own data; one with a field missing is skipped, never
+            // sent a blank or a raw {{token}}.
+            EmailPlaceholderRenderer.Rendered subject = EmailPlaceholderRenderer.render(request.getSubject(), lead, null);
+            EmailPlaceholderRenderer.Rendered body = EmailPlaceholderRenderer.render(request.getBody(), lead, null);
+            List<String> issues = EmailPlaceholderRenderer.issuesOf(subject, body);
+
+            if (!issues.isEmpty()) {
+                skipped.add(id);
+                skipReasons.put(id, String.join("; ", issues));
+                continue;
+            }
+
             try {
 
-                String subject = renderPlaceholders(request.getSubject(), lead);
-                String body = renderPlaceholders(request.getBody(), lead);
-
-                sendMail(lead.getEmail(), subject, body, documents);
+                sendMail(lead.getEmail(), subject.text(), body.text(), documents);
 
             } catch (RuntimeException e) {
                 skipped.add(id);
@@ -318,35 +353,6 @@ public class LeadEmailService {
             case AMC -> "AMC email";
             default -> "Keep-in-touch email";
         };
-    }
-
-    // {{contactPerson}} / {{companyName}} / {{interestedProduct}} - a
-    // deliberately small, closed set of placeholders (per the business
-    // requirement not to over-engineer templating), plain String.replace
-    // rather than a templating engine.
-    private String renderPlaceholders(String text, Lead lead) {
-
-        if (text == null) {
-            return "";
-        }
-
-        String interestedProduct = lead.getLeadProducts() == null
-                ? ""
-                : lead.getLeadProducts().stream()
-                    .map(LeadProduct::getProduct)
-                    .filter(p -> p != null)
-                    .map(p -> p.getName())
-                    .distinct()
-                    .collect(Collectors.joining(", "));
-
-        return text
-                .replace("{{contactPerson}}", nullToEmpty(lead.getContactPerson()))
-                .replace("{{companyName}}", nullToEmpty(lead.getCompanyName()))
-                .replace("{{interestedProduct}}", interestedProduct);
-    }
-
-    private String nullToEmpty(String value) {
-        return value != null ? value : "";
     }
 
     private void sendMail(String to, String subject, String body, List<Document> attachments) {

@@ -108,6 +108,58 @@ class BulkEmailApiTest {
     }
 
     @Test
+    void access_reportsTheCallersOwnEmailSendGrant() throws Exception {
+
+        mockMvc.perform(get("/api/bulk-email/access")).andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/api/bulk-email/access").header("Authorization", bearer(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.canSend").value(true))
+                .andExpect(jsonPath("$.scope").value("OWN"));
+
+        mockMvc.perform(get("/api/bulk-email/access").header("Authorization", bearer(admin)))
+                .andExpect(jsonPath("$.canSend").value(true))
+                .andExpect(jsonPath("$.scope").value("ALL"));
+
+        mockMvc.perform(get("/api/bulk-email/access").header("Authorization", bearer(noEmail)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.canSend").value(false))
+                .andExpect(jsonPath("$.scope").doesNotExist());
+    }
+
+    // Marketing staff are ordinary employees. A role granted EMAIL_SEND (here a
+    // dedicated one, granted nothing else) can use bulk email through the
+    // existing permission model - for its own records only, and without
+    // gaining any other access to leads.
+    @Test
+    void aRoleGrantedEmailSend_canBulkEmailItsOwnRecordsOnly_andGainsNoOtherAccess() throws Exception {
+
+        Role marketing = role("MARKETING_TEST", 10);
+        grant(marketing, "EMAIL_SEND", Scope.OWN);
+
+        Employee marketer = employee("Marketer", "marketer@test.com", "9700000009", marketing);
+        Lead campaign = lead("Campaign Co", "Cara", "cara@campaign.test", marketer);
+
+        String auth = bearer(marketer);
+
+        mockMvc.perform(get("/api/bulk-email/access").header("Authorization", auth))
+                .andExpect(jsonPath("$.canSend").value(true));
+
+        mockMvc.perform(post("/api/bulk-email/preview").header("Authorization", auth)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"target\":\"LEAD\",\"ids\":[" + campaign.getId() + "," + theirs.getId() + "],"
+                                + "\"subject\":\"Hi {{name}}\",\"body\":\"For {{companyName}}\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.eligibleCount").value(1))
+                .andExpect(jsonPath("$.recipients[?(@.id == " + campaign.getId() + ")].renderedSubject").value("Hi Cara"))
+                .andExpect(jsonPath("$.recipients[?(@.id == " + theirs.getId() + ")].exclusionCode").value("NOT_AVAILABLE"));
+
+        // email access is not lead access
+        mockMvc.perform(get("/api/leads").header("Authorization", auth)).andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/leads/" + theirs.getId()).header("Authorization", auth)).andExpect(status().isForbidden());
+    }
+
+    @Test
     void roleWithoutEmailSend_isForbidden() throws Exception {
 
         mockMvc.perform(post("/api/bulk-email/preview").header("Authorization", bearer(noEmail))

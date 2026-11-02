@@ -1,5 +1,6 @@
 package com.compact.crm.service;
 
+import com.compact.crm.exception.IntegrationNotConfiguredException;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -33,10 +34,24 @@ public class BrevoEmailClient {
     private static final String SEND_URI = "/smtp/email";
     private static final String EXPECTED_KEY_PREFIX = "xkeysib-";
 
+    static final String NOT_CONFIGURED_MESSAGE =
+            "Email sending is not configured on this server. Please contact an administrator.";
+
     private final RestClient restClient;
     private final String fromAddress;
     private final String fromName;
     private final boolean checkAccountOnStartup;
+
+    // Email is an optional integration: without an API key and a sender
+    // address the CRM still starts (local development), but every send is
+    // refused with IntegrationNotConfiguredException - never attempted, and
+    // never reported as sent.
+    private boolean configured;
+
+    // Optional monitored inbox for replies (crm.mail.reply-to-address). Null
+    // when unset or not a valid address: replies then go to the sender, as
+    // before this setting existed.
+    private String replyToAddress;
 
     // Explicitly @Autowired: a second (package-private, test-only)
     // constructor also exists below, and Spring's implicit
@@ -45,9 +60,10 @@ public class BrevoEmailClient {
     // startup with "No default constructor found".
     @Autowired
     public BrevoEmailClient(
-            @Value("${brevo.api-key}") String apiKey,
-            @Value("${crm.mail.from-address}") String fromAddress,
+            @Value("${brevo.api-key:}") String apiKey,
+            @Value("${crm.mail.from-address:}") String fromAddress,
             @Value("${crm.mail.from-name}") String fromName,
+            @Value("${crm.mail.reply-to-address:}") String replyToAddress,
             @Value("${crm.debug.brevo-account-check-on-startup:false}") boolean checkAccountOnStartup
     ) {
         this(RestClient.builder()
@@ -58,7 +74,43 @@ public class BrevoEmailClient {
                 .defaultHeader("Accept", MediaType.APPLICATION_JSON_VALUE),
                 fromAddress, fromName, checkAccountOnStartup);
 
+        setReplyToAddress(replyToAddress);
         logApiKeyDiagnostics(apiKey);
+
+        if (sanitizeApiKey(apiKey).isEmpty()) {
+            this.configured = false;
+        }
+
+        if (!configured) {
+            log.warn("Email sending is DISABLED: BREVO_API_KEY and/or MAIL_FROM_ADDRESS is not set. "
+                    + "The CRM runs normally, but every email send is refused until both are configured.");
+        }
+    }
+
+    public boolean isConfigured() {
+        return configured;
+    }
+
+    // Called by every send path before it commits to sending (before any
+    // send log, claim or activity entry is written).
+    public void requireConfigured() {
+
+        if (!configured) {
+            throw new IntegrationNotConfiguredException(NOT_CONFIGURED_MESSAGE);
+        }
+    }
+
+    // Package-private so tests can set it on a client built for a mock server.
+    void setReplyToAddress(String address) {
+
+        String trimmed = address == null ? "" : address.trim();
+
+        if (!trimmed.isEmpty() && !EmailAddresses.isValid(trimmed)) {
+            log.warn("crm.mail.reply-to-address is not a valid email address - it is ignored and replies go to the sender.");
+            trimmed = "";
+        }
+
+        this.replyToAddress = trimmed.isEmpty() ? null : trimmed;
     }
 
     // Strips accidental surrounding whitespace/newline - a common
@@ -121,6 +173,9 @@ public class BrevoEmailClient {
         this.fromAddress = fromAddress;
         this.fromName = fromName;
         this.checkAccountOnStartup = checkAccountOnStartup;
+        // The API key lives in the builder's default headers here; the public
+        // constructor above also requires it to be set.
+        this.configured = fromAddress != null && !fromAddress.isBlank();
     }
 
     // TEMPORARY diagnostic for the "401 Key not found" investigation - see
@@ -142,7 +197,7 @@ public class BrevoEmailClient {
     @PostConstruct
     void verifyApiKeyAgainstAccountEndpoint() {
 
-        if (!checkAccountOnStartup) {
+        if (!checkAccountOnStartup || !configured) {
             return;
         }
 
@@ -173,6 +228,8 @@ public class BrevoEmailClient {
     // (MimeMessageHelper.setText(body, false) before this change).
     public void send(String to, String subject, String body, List<EmailAttachment> attachments) {
 
+        requireConfigured();
+
         try {
 
             post(to, subject, body, attachments);
@@ -198,6 +255,12 @@ public class BrevoEmailClient {
     }
 
     public SendOutcome trySend(String to, String subject, String body, List<EmailAttachment> attachments) {
+
+        // Definitely not sent (nothing was attempted). Callers check
+        // requireConfigured() first; this is the backstop.
+        if (!configured) {
+            return new SendOutcome(Result.FAILED, null, "Email sending is not configured on this server");
+        }
 
         try {
 
@@ -249,6 +312,7 @@ public class BrevoEmailClient {
 
         Request request = new Request(
                 new Sender(fromName, fromAddress),
+                replyToAddress == null ? null : new Recipient(replyToAddress),
                 List.of(new Recipient(to)),
                 subject,
                 body,
@@ -269,6 +333,7 @@ public class BrevoEmailClient {
     @JsonInclude(JsonInclude.Include.NON_EMPTY)
     private record Request(
             Sender sender,
+            Recipient replyTo,
             List<Recipient> to,
             String subject,
             String textContent,

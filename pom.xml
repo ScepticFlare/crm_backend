@@ -161,6 +161,24 @@
 
 			</plugin>
 
+			<!-- The test suite runs on in-memory H2 (src/test/resources/application.properties).
+			     OS environment variables outrank any application.properties, so a shell with
+			     SPRING_DATASOURCE_URL set for a local Postgres run would point every
+			     @SpringBootTest at Postgres with the H2 driver, and fail. System properties
+			     outrank environment variables, so the test JVM pins the URL (and user) here.
+			     Test-only: the application and its packaged jar are unaffected. The
+			     Postgres-only tests build their own DataSource from CRM_TEST_PG_URL. -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<systemPropertyVariables>
+						<spring.datasource.url>jdbc:h2:mem:crm_test;DB_CLOSE_DELAY=-1;MODE=PostgreSQL</spring.datasource.url>
+						<spring.datasource.username>sa</spring.datasource.username>
+					</systemPropertyVariables>
+				</configuration>
+			</plugin>
+
 		</plugins>
 	</build>
 

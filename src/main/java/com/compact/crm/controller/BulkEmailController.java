@@ -4,6 +4,7 @@ import com.compact.crm.dto.request.BulkEmailRequest;
 import com.compact.crm.dto.response.BulkEmailBatchResponse;
 import com.compact.crm.dto.response.BulkEmailPreviewResponse;
 import com.compact.crm.dto.response.BulkEmailSendResponse;
+import com.compact.crm.dto.response.EmailAccessResponse;
 import com.compact.crm.service.BulkEmailService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +24,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class BulkEmailController {
 
     private final BulkEmailService bulkEmailService;
+
+    // The caller's own EMAIL_SEND grant (any authenticated user may ask about
+    // themselves) - drives whether the email actions are shown at all.
+    @GetMapping("/access")
+    public EmailAccessResponse access() {
+        return bulkEmailService.access();
+    }
 
     // Review step: validates and authorizes the whole selection and, when a
     // subject/body are supplied, renders each recipient's own message.

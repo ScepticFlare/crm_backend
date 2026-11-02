@@ -52,6 +52,19 @@ public final class OpportunityWorkflow {
         return o.getSalesStage() != null && isActive(o.getSalesStage());
     }
 
+    // Whether an opportunity in this stage must have a next follow-up (a
+    // pending, future, described follow-up): only one still being worked -
+    // an active stage (see isActive: NEW, IN PROGRESS, the legacy sub-stages
+    // and custom stages) or POSTPONED. WON, LOST and the historical closed
+    // stages (DROPPED, UNRESPONSIVE, INVALID) need none.
+    public static boolean requiresNextFollowUp(SalesStage stage) {
+        return isActive(stage) || is(stage, SalesStageType.POSTPONED);
+    }
+
+    public static boolean requiresNextFollowUp(Opportunity o) {
+        return requiresNextFollowUp(o.getSalesStage());
+    }
+
     // Grouping key used by the reports: the type name for a typed stage (so a
     // renamed WON still counts as WON), CUSTOM for any custom stage.
     public static String key(SalesStage stage) {

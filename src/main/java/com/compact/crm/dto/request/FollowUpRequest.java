@@ -35,4 +35,14 @@ public class FollowUpRequest {
     private LocalDateTime completedDate;
 
     private String remarks;
+
+    // The NEXT follow-up, supplied when this one is being completed (all three
+    // go together). Required when completing it would leave its opportunity
+    // without a next follow-up and the opportunity still needs one (it is
+    // active or POSTPONED - see FollowUpService.updateFollowUp). Ignored otherwise.
+    private String nextActionDescription;
+
+    private LocalDateTime nextFollowUpDate;
+
+    private Long nextActionActivityTypeId;
 }

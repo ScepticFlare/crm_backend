@@ -1,6 +1,7 @@
 package com.compact.crm.service;
 
 import com.compact.crm.dto.response.*;
+import com.compact.crm.util.TableExport;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
@@ -507,8 +508,8 @@ public class FullReportExcelExportService {
             var formats = workbook.createDataFormat();
 
             text = derive(workbook, data, formats.getFormat("@"));
-            date = derive(workbook, data, formats.getFormat("yyyy-mm-dd"));
-            dateTime = derive(workbook, data, formats.getFormat("yyyy-mm-dd hh:mm"));
+            date = derive(workbook, data, formats.getFormat(TableExport.XLSX_DATE_FORMAT));
+            dateTime = derive(workbook, data, formats.getFormat(TableExport.XLSX_DATETIME_FORMAT));
             integer = derive(workbook, data, formats.getFormat("0"));
             decimal = derive(workbook, data, formats.getFormat("#,##0.00"));
         }

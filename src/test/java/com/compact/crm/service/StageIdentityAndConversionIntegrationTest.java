@@ -862,9 +862,10 @@ class StageIdentityAndConversionIntegrationTest {
                 .leadValidity(LeadValidity.VALID)
                 .lead(validLead("ReallyDropped")).build());
 
+        // a closed (DROPPED) record needs no next follow-up, so it is not flagged
         assertThat(opportunityService.getOpportunityById(closed.getId()).getNoNextAction()).isFalse();
 
-        // closed + missing date: editable without inventing a date
+        // closed + missing closing date: editable without inventing a date
         OpportunityRequest edit = req("Dropped by Customer", null);
         edit.setTitle("Really dropped (edited)");
         assertThat(opportunityService.updateOpportunity(closed.getId(), edit).getTitle())

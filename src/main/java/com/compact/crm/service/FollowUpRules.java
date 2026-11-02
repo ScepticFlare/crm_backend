@@ -5,8 +5,9 @@ import com.compact.crm.enums.FollowUpStatus;
 
 import java.time.LocalDateTime;
 
-// What makes a follow-up count as the "next action" an ACTIVE opportunity must
-// have. One definition, used by the save-time validation (OpportunityService),
+// What makes a follow-up count as the "next action" (and its date as the next
+// follow-up date) an active or postponed opportunity must have. One definition,
+// used by the save-time validation (OpportunityService),
 // the missing-follow-up flag shown in the UI, the dashboard reminder counts
 // and the follow-up form's own validation, so they can never disagree.
 //
@@ -21,7 +22,8 @@ public final class FollowUpRules {
     public static final int MIN_NEXT_ACTION_LENGTH = 3;
 
     public static final String MISSING_MESSAGE =
-            "An active opportunity needs a pending follow-up with a next action and a future date. "
+            "An active or postponed opportunity needs a pending follow-up with a next action and a future date "
+                    + "(its next follow-up date). "
                     + "Enter the next action, activity type and follow-up date, or schedule a follow-up for this "
                     + "opportunity first (with a description of the next action) and then save again.";
 

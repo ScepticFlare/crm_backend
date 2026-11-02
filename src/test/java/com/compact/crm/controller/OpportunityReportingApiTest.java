@@ -57,6 +57,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -314,17 +315,12 @@ class OpportunityReportingApiTest {
     // ---------------------------------------------------------- Lead create
 
     @Test
-    void creatingALead_requiresAProductAndABattery_butAValidLeadIsStillCreated() throws Exception {
+    void creatingALead_requiresAProduct_butBatteryIsOptional() throws Exception {
 
         mockMvc.perform(post("/api/leads").header("Authorization", adminToken).contentType("application/json")
                         .content(json(leadBody("No Product Ltd", null, batteryA.getId()))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("Please select at least one Product."));
-
-        mockMvc.perform(post("/api/leads").header("Authorization", adminToken).contentType("application/json")
-                        .content(json(leadBody("No Battery Ltd", productA.getId(), null))))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("Please select at least one Battery."));
 
         // an unfilled row does not count as a product
         Map<String, Object> blankRow = leadBody("Blank Row Ltd", null, batteryA.getId());
@@ -341,10 +337,28 @@ class OpportunityReportingApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.leadProducts[0].product.name").value("Online UPS 10kVA"))
                 .andExpect(jsonPath("$.leadBatteries[0].battery.name").value("SMF 12V 42Ah"));
+
+        // a Product and no Battery: created, with no battery - batteries omitted or an empty list
+        mockMvc.perform(post("/api/leads").header("Authorization", adminToken).contentType("application/json")
+                        .content(json(leadBody("Product Only Ltd", productA.getId(), null))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.leadProducts[0].product.name").value("Online UPS 10kVA"))
+                .andExpect(jsonPath("$.leadBatteries").isEmpty());
+
+        Map<String, Object> emptyBatteries = leadBody("Empty Batteries Ltd", productA.getId(), null);
+        emptyBatteries.put("batteries", List.of());
+        mockMvc.perform(post("/api/leads").header("Authorization", adminToken).contentType("application/json")
+                        .content(json(emptyBatteries)))
+                .andExpect(status().isOk());
+
+        Lead productOnly = leadRepository.findAll().stream()
+                .filter(l -> l.getCompanyName().equals("Product Only Ltd")).findFirst().orElseThrow();
+        assertThat(productOnly.getLeadBatteries()).isEmpty();
+        assertThat(productOnly.getLeadProducts()).hasSize(1);
     }
 
     @Test
-    void anOlderLeadWithoutProductOrBattery_canStillBeEdited_butALeadCannotLoseThem() throws Exception {
+    void anOlderLeadWithoutProductOrBattery_canStillBeEdited_butALeadCannotLoseItsProduct() throws Exception {
 
         // historical lead: no product, no battery
         Lead legacy = leadRepository.save(Lead.builder()
@@ -366,9 +380,15 @@ class OpportunityReportingApiTest {
         long id = read(created).get("id").asLong();
 
         mockMvc.perform(put("/api/leads/" + id).header("Authorization", adminToken)
-                        .contentType("application/json").content(json(leadBody("Keeps Items", productA.getId(), null))))
+                        .contentType("application/json").content(json(leadBody("Keeps Items", null, batteryA.getId()))))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("Please select at least one Battery."));
+                .andExpect(jsonPath("$.message").value("Please select at least one Product."));
+
+        // Battery is optional: its last one can be removed
+        mockMvc.perform(put("/api/leads/" + id).header("Authorization", adminToken)
+                        .contentType("application/json").content(json(leadBody("Keeps Items", productA.getId(), null))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.leadBatteries").isEmpty());
     }
 
     // ------------------------------------------ conversion and Opportunity edit
@@ -532,6 +552,77 @@ class OpportunityReportingApiTest {
     }
 
     // ------------------------------------ lists, filters, selection, export
+
+    // Every date column of the opportunity report exports (In Progress and the
+    // other stages): Excel shows dd/MM/yyyy and dd/MM/yyyy HH:mm as real date
+    // cells; CSV stays ISO. 4 May / 7 June are used so a US-style month/day
+    // swap would show.
+    @Test
+    void opportunityExports_writeEveryDateColumnInBritishFormatInExcel_andIsoInCsv() throws Exception {
+
+        java.time.format.DateTimeFormatter british = java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
+        java.time.format.DateTimeFormatter iso = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+        SalesStage postponed = salesStageService.getByType(SalesStageType.POSTPONED);
+        SalesStage lost = salesStageService.getByType(SalesStageType.LOST);
+
+        for (SalesStage stage : List.of(inProgress, postponed, lost)) {
+
+            Opportunity o = storedOpportunity("Dates " + stage.getName(), staffA, stage, productA, batteryA);
+            o.setExpectedClosingDate(java.time.LocalDate.of(2030, 5, 4));
+            o.setPostponedReviewDate(java.time.LocalDate.of(2030, 6, 7));
+            opportunityRepository.save(o);
+
+            followUpRepository.save(FollowUp.builder()
+                    .opportunity(o).employee(staffA).activityType(activityType).status(FollowUpStatus.PENDING)
+                    .scheduledDate(LocalDateTime.of(2030, 5, 4, 9, 30)).remarks("Call about the quotation").build());
+
+            flushAndClear();
+            Opportunity stored = opportunityRepository.findById(o.getId()).orElseThrow();
+
+            String columns = "title,date,nextFollowUp,postponedReviewDate,createdAt,updatedAt";
+
+            MvcResult xlsx = perform(get("/api/opportunities/export")
+                    .param("ids", o.getId().toString()).param("columns", columns).param("format", "xlsx"), adminToken, 200);
+
+            try (org.apache.poi.ss.usermodel.Workbook wb = org.apache.poi.ss.usermodel.WorkbookFactory.create(
+                    new java.io.ByteArrayInputStream(xlsx.getResponse().getContentAsByteArray()))) {
+
+                org.apache.poi.ss.usermodel.Sheet sheet = wb.getSheetAt(0);
+                org.apache.poi.ss.usermodel.Row header = sheet.getRow(0);
+                org.apache.poi.ss.usermodel.Row row = sheet.getRow(1);
+                var formatter = new org.apache.poi.ss.usermodel.DataFormatter(java.util.Locale.US);
+
+                Map<String, String> shown = new LinkedHashMap<>();
+                Map<String, String> pattern = new LinkedHashMap<>();
+                for (int c = 0; c < header.getLastCellNum(); c++) {
+                    shown.put(header.getCell(c).getStringCellValue(), formatter.formatCellValue(row.getCell(c)));
+                    pattern.put(header.getCell(c).getStringCellValue(), row.getCell(c).getCellStyle().getDataFormatString());
+                }
+
+                assertThat(shown).as(stage.getName())
+                        .containsEntry("Expected Closing Date", "04/05/2030")
+                        .containsEntry("Next Follow-up", "04/05/2030 09:30")
+                        .containsEntry("Postponed Review Date", "07/06/2030")
+                        .containsEntry("Created Date", stored.getCreatedAt().format(british))
+                        .containsEntry("Last Modified", stored.getUpdatedAt().format(british));
+
+                assertThat(pattern).as(stage.getName())
+                        .containsEntry("Expected Closing Date", "dd/mm/yyyy")
+                        .containsEntry("Postponed Review Date", "dd/mm/yyyy")
+                        .containsEntry("Next Follow-up", "dd/mm/yyyy hh:mm")
+                        .containsEntry("Created Date", "dd/mm/yyyy hh:mm")
+                        .containsEntry("Last Modified", "dd/mm/yyyy hh:mm");
+            }
+
+            List<List<String>> rows = csv(perform(get("/api/opportunities/export")
+                    .param("ids", o.getId().toString()).param("columns", columns).param("format", "csv"), adminToken, 200));
+
+            assertThat(rows.get(1)).as(stage.getName()).containsExactly(
+                    "Dates " + stage.getName(), "2030-05-04", "2030-05-04 09:30:00", "2030-06-07",
+                    stored.getCreatedAt().format(iso), stored.getUpdatedAt().format(iso));
+        }
+    }
 
     @Test
     void inProgressExport_matchesTheInProgressList_andAllMatchingSelectionCoversMoreThanOnePage() throws Exception {

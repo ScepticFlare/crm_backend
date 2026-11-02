@@ -4,6 +4,7 @@ import com.compact.crm.dto.request.BulkEmailRequest;
 import com.compact.crm.dto.response.BulkEmailBatchResponse;
 import com.compact.crm.dto.response.BulkEmailPreviewResponse;
 import com.compact.crm.dto.response.BulkEmailSendResponse;
+import com.compact.crm.dto.response.EmailAccessResponse;
 import com.compact.crm.entity.EmailBulkBatch;
 import com.compact.crm.entity.EmailSendLog;
 import com.compact.crm.entity.EmailTemplate;
@@ -15,6 +16,7 @@ import com.compact.crm.enums.ActivityModule;
 import com.compact.crm.enums.BulkEmailTarget;
 import com.compact.crm.enums.EmailSendStatus;
 import com.compact.crm.enums.LeadStatus;
+import com.compact.crm.enums.Scope;
 import com.compact.crm.exception.ResourceNotFoundException;
 import com.compact.crm.repository.EmailBulkBatchRepository;
 import com.compact.crm.repository.EmailSendLogRepository;
@@ -123,6 +125,15 @@ public class BulkEmailService {
     @Value("${crm.mail.bulk.dedupe-hours:24}")
     private int dedupeHours = 24;
 
+    // ------------------------------------------------------------------- access
+
+    public EmailAccessResponse access() {
+
+        Scope scope = accessControlService.resolveScope(currentUserService.getCurrentEmployee(), EMAIL_SEND);
+
+        return new EmailAccessResponse(scope != null, scope);
+    }
+
     // ------------------------------------------------------------------ preview
 
     public BulkEmailPreviewResponse preview(BulkEmailRequest request) {
@@ -135,6 +146,13 @@ public class BulkEmailService {
         List<Long> ids = distinctIds(request.getIds(), maxRecipients);
 
         List<Eval> evals = evaluate(employee, request.getTarget(), ids, request.getSubject(), request.getBody(), "");
+
+        // For the draft editor: each authorized record's own field values.
+        for (Eval ev : evals) {
+            if (ev.lead != null) {
+                ev.dto.setMergeFields(EmailPlaceholderRenderer.fieldValues(ev.lead, ev.opportunity));
+            }
+        }
 
         List<BulkEmailPreviewResponse.Recipient> recipients = evals.stream().map(e -> e.dto).toList();
         long eligible = recipients.stream().filter(BulkEmailPreviewResponse.Recipient::isEligible).count();
@@ -154,6 +172,9 @@ public class BulkEmailService {
         accessControlService.requirePermission(employee, EMAIL_SEND);
 
         requireTarget(request.getTarget());
+
+        // No batch is started that could never be sent.
+        brevoEmailClient.requireConfigured();
 
         if (isBlank(request.getSubject()) || isBlank(request.getBody())) {
             throw new IllegalArgumentException("Subject and message are required.");
@@ -195,6 +216,10 @@ public class BulkEmailService {
         accessControlService.requirePermission(employee, EMAIL_SEND);
 
         EmailBulkBatch batch = loadBatch(request.getBatchId(), employee, false);
+
+        // Before any recipient is claimed: an unconfigured provider must not
+        // leave claims (or FAILED/UNKNOWN rows) behind.
+        brevoEmailClient.requireConfigured();
 
         verifyUnchanged(batch, request);
 
@@ -627,10 +652,16 @@ public class BulkEmailService {
             ev.lead = lead;
             ev.opportunity = opportunity;
 
-            ev.dto.setCompanyName(lead.getCompanyName());
-            ev.dto.setContactPerson(lead.getContactPerson());
+            // An Opportunity is emailed at its OWN contact (V14: copied from the
+            // Lead on conversion, then edited on the Opportunity) - the same
+            // contact its screens, reports and merge fields use.
+            String contactPerson = opportunity != null ? opportunity.getContactPerson() : lead.getContactPerson();
+            String address = opportunity != null ? opportunity.getContactEmail() : lead.getEmail();
 
-            String raw = lead.getEmail() == null ? "" : lead.getEmail().trim();
+            ev.dto.setCompanyName(lead.getCompanyName());
+            ev.dto.setContactPerson(contactPerson);
+
+            String raw = address == null ? "" : address.trim();
             ev.dto.setEmail(raw.isEmpty() ? null : raw);
             ev.email = EmailAddresses.normalize(raw);
 
@@ -686,8 +717,7 @@ public class BulkEmailService {
                 EmailPlaceholderRenderer.Rendered s = EmailPlaceholderRenderer.render(subject, ev.lead, ev.opportunity);
                 EmailPlaceholderRenderer.Rendered b = EmailPlaceholderRenderer.render(body, ev.lead, ev.opportunity);
 
-                List<String> issues = new ArrayList<>(s.issues());
-                b.issues().stream().filter(i -> !issues.contains(i)).forEach(issues::add);
+                List<String> issues = EmailPlaceholderRenderer.issuesOf(s, b);
 
                 if (!issues.isEmpty()) {
                     ev.exclude("UNRESOLVED_PLACEHOLDER", String.join("; ", issues));

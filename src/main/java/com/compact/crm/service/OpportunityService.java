@@ -150,7 +150,7 @@ public class OpportunityService {
 
         Opportunity opportunity = Opportunity.builder()
                 .title(request.getTitle())
-                .productValue(request.getProductValue())
+                .productValue(requireValue(request.getProductValue()))
                 .leadValidity(request.getLeadValidity())
                 .lead(lead)
                 .build();
@@ -159,8 +159,10 @@ public class OpportunityService {
 
         applyWorkflowRules(opportunity, request, salesStage, true);
 
-        // An active opportunity needs a qualifying pending follow-up: one the
-        // lead already has, or the next action supplied with this request.
+        // An active or postponed opportunity needs a qualifying pending
+        // follow-up: one the lead already has (carried over - the
+        // opportunity's next follow-up date includes its lead's follow-ups),
+        // or the next action supplied with this request.
         NextActionInput nextAction = requireNextAction(null, lead, salesStage, nextActionOf(request));
 
         Opportunity saved;
@@ -211,6 +213,27 @@ public class OpportunityService {
             throw new IllegalArgumentException(
                     "Sales stage \"" + name + "\" does not exist. Ask an Admin to add it first.");
         }
+    }
+
+    // Opportunity value is mandatory on create and on every edit: a number,
+    // zero or more. Never defaulted - a missing value is rejected, not turned
+    // into 0. Historical opportunities saved without one keep NULL until
+    // someone edits them, at which point a value must be entered.
+    static Double requireValue(Double value) {
+
+        if (value == null) {
+            throw new IllegalArgumentException("Opportunity value is required.");
+        }
+
+        if (value.isNaN() || value.isInfinite()) {
+            throw new IllegalArgumentException("Opportunity value must be a valid number.");
+        }
+
+        if (value < 0) {
+            throw new IllegalArgumentException("Opportunity value cannot be negative.");
+        }
+
+        return value;
     }
 
     private static String trimToNull(String value) {
@@ -588,8 +611,8 @@ public class OpportunityService {
     //  - hasNextAction: a QUALIFYING follow-up exists on the opportunity or its
     //    originating lead (pending, scheduled now or later, with a described
     //    next action - see FollowUpRules). Computed for every opportunity.
-    //  - noNextAction: the opportunity is ACTIVE and has none. This is the
-    //    state the save-time rule rejects and the UI explains.
+    //  - noNextAction: the opportunity needs one (active or POSTPONED) and has
+    //    none. This is the state the save-time rule rejects and the UI explains.
     // Two queries for the whole batch (no per-row lookups).
     void decorateNextAction(Collection<Opportunity> opportunities) {
 
@@ -633,7 +656,7 @@ public class OpportunityService {
                     || (leadId != null && leadsWithFollowUp.contains(leadId));
 
             o.setHasNextAction(has);
-            o.setNoNextAction(OpportunityWorkflow.isActive(o) && !has);
+            o.setNoNextAction(OpportunityWorkflow.requiresNextFollowUp(o) && !has);
             o.setNextFollowUpDate(earlier(opportunityNext.get(o.getId()), leadId == null ? null : leadNext.get(leadId)));
         }
     }
@@ -731,17 +754,20 @@ public class OpportunityService {
                 followUpRepository.findPendingFutureByLeadIds(List.of(leadId), now)).isEmpty();
     }
 
-    // Enforces the rule: an opportunity that is (becoming) ACTIVE must have a
-    // qualifying pending follow-up - either one that already exists, or the
-    // next action supplied right now (returned so the caller creates it after
-    // saving the opportunity, in the same transaction). Nothing is invented:
-    // without one of the two the save is rejected with an actionable message.
-    // Not applied to WON / LOST / POSTPONED or the historical closed stages.
-    // Throws before anything is changed.
+    // Enforces the rule: an opportunity that is (becoming) active or
+    // POSTPONED (see OpportunityWorkflow.requiresNextFollowUp) must have a
+    // qualifying pending follow-up - its next follow-up date - so it stays on
+    // the team's radar. WON, LOST and the historical closed stages are
+    // exempt. Either one that already exists, or the next action supplied right
+    // now (returned so the caller creates it after saving the opportunity, in
+    // the same transaction). Nothing is invented: without one of the two the
+    // save is rejected with an actionable message. An existing qualifying
+    // follow-up is reused, so editing never creates a follow-up the user did
+    // not ask for. Throws before anything is changed.
     private NextActionInput requireNextAction(
             Long opportunityId, Lead lead, SalesStage newStage, NextActionInput supplied) {
 
-        if (!OpportunityWorkflow.isActive(newStage)) {
+        if (!OpportunityWorkflow.requiresNextFollowUp(newStage)) {
             return null;
         }
 
@@ -988,11 +1014,13 @@ public class OpportunityService {
             throw new IllegalArgumentException(WON_LOCK_MESSAGE);
         }
 
-        // An opportunity that is (or is becoming) ACTIVE must have a qualifying
-        // pending follow-up - existing, or supplied with this edit. Checked
-        // before anything on the entity is touched. Not asked for WON / LOST /
-        // POSTPONED, so a legacy record lacking one can still be closed out,
-        // and the edit form can supply the missing one to fix it.
+        // Mandatory value, checked before anything on the entity is touched.
+        Double value = requireValue(request.getProductValue());
+
+        // An opportunity that is (becoming) active or POSTPONED must have a
+        // qualifying pending follow-up - existing (reused, nothing new is
+        // created), or supplied with this edit. Checked before anything on the
+        // entity is touched. WON / LOST / the closed stages need none.
         NextActionInput nextAction = requireNextAction(
                 opportunity.getId(), opportunity.getLead(), salesStage, nextActionOf(request));
 
@@ -1010,7 +1038,7 @@ public class OpportunityService {
         applyDetailsEdit(opportunity, details);
 
         opportunity.setTitle(request.getTitle());
-        opportunity.setProductValue(request.getProductValue());
+        opportunity.setProductValue(value);
         opportunity.setLeadValidity(request.getLeadValidity());
 
         opportunity.getLead().setLeadValidity(request.getLeadValidity());
@@ -1142,8 +1170,9 @@ public class OpportunityService {
     }
 
     // Non-blocking dashboard reminders over the Opportunities the caller can
-    // view: expired closing dates, active opportunities with no upcoming
-    // follow-up, and postponed opportunities whose review date has arrived.
+    // view: expired closing dates, opportunities that must have a next
+    // follow-up date (active or POSTPONED) and have none, and postponed
+    // opportunities whose review date has arrived.
     // Read-only - nothing here changes any Opportunity.
     public WorkflowAlertsResponse getWorkflowAlerts() {
 
@@ -1159,7 +1188,7 @@ public class OpportunityService {
                 owner, OpportunitySpecifications.closingDateExpired(today)));
 
         Specification<Opportunity> noNextAction = SpecificationUtil.and(java.util.Arrays.asList(
-                owner, OpportunitySpecifications.activeStage(),
+                owner, OpportunitySpecifications.requiresNextFollowUp(),
                 OpportunitySpecifications.noQualifyingFollowUp(now)));
 
         Specification<Opportunity> postponedDue = SpecificationUtil.and(java.util.Arrays.asList(

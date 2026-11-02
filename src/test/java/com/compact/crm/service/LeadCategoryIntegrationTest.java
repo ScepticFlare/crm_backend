@@ -554,6 +554,7 @@ class LeadCategoryIntegrationTest {
 
         OpportunityRequest r = new OpportunityRequest();
         r.setTitle("Deal");
+        r.setProductValue(50000.0);
         r.setExpectedClosingDate(BusinessClock.today().plusDays(30));
         r.setSalesStage("IN PROGRESS");
         r.setLeadValidity(LeadValidity.VALID);

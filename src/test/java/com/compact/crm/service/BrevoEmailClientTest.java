@@ -65,6 +65,75 @@ class BrevoEmailClientTest {
         server.verify();
     }
 
+    // Local development without Brevo: the bean is created (the CRM starts),
+    // but nothing is ever sent or reported as sent.
+    @Test
+    void withoutApiKeyOrSender_theClientIsCreated_butRefusesEverySend() {
+
+        for (String[] config : new String[][]{{"", ""}, {"xkeysib-local", ""}, {"", "sales@compact.example"}}) {
+
+            BrevoEmailClient client = new BrevoEmailClient(config[0], config[1], "Compact Systems", "", false);
+
+            assertThat(client.isConfigured()).isFalse();
+
+            assertThatThrownBy(() -> client.send("rajesh@acme.com", "Subject", "Body", List.of()))
+                    .isInstanceOf(com.compact.crm.exception.IntegrationNotConfiguredException.class)
+                    .hasMessageContaining("not configured");
+
+            assertThat(client.trySend("rajesh@acme.com", "Subject", "Body", List.of()).result())
+                    .isEqualTo(BrevoEmailClient.Result.FAILED);
+        }
+    }
+
+    @Test
+    void withApiKeyAndSender_theClientIsConfigured() {
+
+        BrevoEmailClient client = new BrevoEmailClient(
+                " xkeysib-local ", "sales@compact.example", "Compact Systems", "", false);
+
+        assertThat(client.isConfigured()).isTrue();
+        client.requireConfigured();
+    }
+
+    @Test
+    void send_withAReplyToConfigured_setsReplyTo_andKeepsTheVerifiedSender() {
+
+        init();
+
+        server.expect(requestTo(BASE_URL + "/smtp/email"))
+                .andExpect(jsonPath("$.sender.email").value("sales@compact.example"))
+                .andExpect(jsonPath("$.replyTo.email").value("sales-inbox@compact.example"))
+                .andRespond(withSuccess());
+
+        BrevoEmailClient client = client();
+        client.setReplyToAddress("  sales-inbox@compact.example ");
+        client.send("rajesh@acme.com", "Subject", "Body", List.of());
+
+        server.verify();
+    }
+
+    @Test
+    void send_withoutAReplyTo_orWithAnInvalidOne_omitsIt_soRepliesGoToTheSender() {
+
+        init();
+
+        server.expect(requestTo(BASE_URL + "/smtp/email"))
+                .andExpect(jsonPath("$.replyTo").doesNotExist())
+                .andRespond(withSuccess());
+        server.expect(requestTo(BASE_URL + "/smtp/email"))
+                .andExpect(jsonPath("$.replyTo").doesNotExist())
+                .andRespond(withSuccess());
+
+        BrevoEmailClient client = client();
+        client.setReplyToAddress("");
+        client.send("rajesh@acme.com", "Subject", "Body", List.of());
+
+        client.setReplyToAddress("not an address");
+        client.send("rajesh@acme.com", "Subject", "Body", List.of());
+
+        server.verify();
+    }
+
     @Test
     void send_withAttachment_sendsBase64ContentAndFilename() {
 

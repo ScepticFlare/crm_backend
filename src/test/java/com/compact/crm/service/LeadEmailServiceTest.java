@@ -300,6 +300,11 @@ class LeadEmailServiceTest {
         assertThat(result.getIneligibleIds()).containsExactlyInAnyOrder(31L, 32L, 33L);
         assertThat(result.getEligibleCount()).isEqualTo(1);
         assertThat(result.getIneligibleCount()).isEqualTo(3);
+
+        // the draft's field values: for the eligible (authorized) lead only
+        assertThat(result.getRecipients()).containsOnlyKeys(30L);
+        assertThat(result.getRecipients().get(30L).mergeFields().get("companyName").value())
+                .isEqualTo(ownedWithEmail.getCompanyName());
     }
 
     @Test
@@ -408,6 +413,99 @@ class LeadEmailServiceTest {
 
         verify(brevoEmailClient, never()).send(eq("blocked@acme.com"), any(), any(), any());
         verify(brevoEmailClient).send(eq("fine@acme.com"), any(), any(), any());
+    }
+
+    // ---------------------------------------------------------------- merge fields
+
+    // A merge field inserted after the preview is resolved against the
+    // selected lead at send time, never sent as a raw {{token}}.
+    @Test
+    void sendIndividual_resolvesMergeFieldsForTheSelectedLead() {
+
+        grant(employeeRole, EMAIL_SEND, Scope.OWN);
+        when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
+
+        Lead lead = leadOwnedBy(80L, employeeA, "rajesh@acme.com");
+        when(leadRepository.findById(80L)).thenReturn(Optional.of(lead));
+
+        leadEmailService.sendIndividual(80L, new SendLeadEmailRequest(
+                EmailTemplateType.KEEP_IN_TOUCH, null, "News for {{companyName}}", "Dear {{name}},", List.of()));
+
+        verify(brevoEmailClient).send(eq("rajesh@acme.com"), eq("News for ABC Industries"), eq("Dear Rajesh,"), any());
+    }
+
+    @Test
+    void sendIndividual_withAFieldThisLeadHasNoValueFor_isRefused_notSentBlank() {
+
+        grant(employeeRole, EMAIL_SEND, Scope.OWN);
+        when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
+
+        Lead lead = leadOwnedBy(81L, employeeA, "rajesh@acme.com");   // no products
+        when(leadRepository.findById(81L)).thenReturn(Optional.of(lead));
+
+        assertThatThrownBy(() -> leadEmailService.sendIndividual(81L, new SendLeadEmailRequest(
+                EmailTemplateType.PRODUCT_BROCHURE, null, "Your {{interestedProduct}}", "Body", List.of())))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Product is missing");
+
+        assertThatThrownBy(() -> leadEmailService.sendIndividual(81L, new SendLeadEmailRequest(
+                EmailTemplateType.PRODUCT_BROCHURE, null, "Hi", "Dear {{nmae}}", List.of())))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unsupported field \"nmae\"");
+
+        verify(brevoEmailClient, never()).send(any(), any(), any(), any());
+    }
+
+    @Test
+    void previewIndividual_flagsMissingValues_andLeavesTheirTokenInPlace() {
+
+        grant(employeeRole, EMAIL_SEND, Scope.OWN);
+        when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
+
+        Lead lead = leadOwnedBy(82L, employeeA, "rajesh@acme.com");
+        when(leadRepository.findById(82L)).thenReturn(Optional.of(lead));
+
+        EmailTemplate template = EmailTemplate.builder()
+                .id(5L).subject("{{interestedBattery}} for {{companyName}}").body("Dear {{contactPerson}}").build();
+        when(emailTemplateService.getById(5L)).thenReturn(template);
+
+        EmailPreviewResponse preview = leadEmailService.previewIndividual(82L, EmailTemplateType.KEEP_IN_TOUCH, 5L);
+
+        assertThat(preview.getSubject()).isEqualTo("{{interestedBattery}} for ABC Industries");
+        assertThat(preview.getBody()).isEqualTo("Dear Rajesh");
+        assertThat(preview.getIssues()).containsExactly("Battery is missing for this recipient");
+
+        // the composer shows the left-over token as missing, not as {{...}}
+        assertThat(preview.getMergeFields().get("interestedBattery").value()).isNull();
+        assertThat(preview.getMergeFields().get("interestedBattery").label()).isEqualTo("Battery");
+        assertThat(preview.getMergeFields().get("contactPerson").value()).isEqualTo("Rajesh");
+    }
+
+    @Test
+    void sendBulkKeepInTouch_skipsALeadMissingAField_andSendsTheOthersTheirOwnValues() {
+
+        grant(employeeRole, EMAIL_SEND, Scope.OWN);
+        when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
+
+        Lead complete = leadOwnedBy(90L, employeeA, "one@acme.com");
+        Lead other = leadOwnedBy(91L, employeeA, "two@acme.com");
+        other.setContactPerson("Meera");
+        Lead blank = leadOwnedBy(92L, employeeA, "three@acme.com");
+        blank.setContactPerson(" ");
+
+        when(leadRepository.findById(90L)).thenReturn(Optional.of(complete));
+        when(leadRepository.findById(91L)).thenReturn(Optional.of(other));
+        when(leadRepository.findById(92L)).thenReturn(Optional.of(blank));
+
+        BulkEmailResult result = leadEmailService.sendBulkKeepInTouch(new BulkKeepInTouchEmailRequest(
+                List.of(90L, 91L, 92L), null, "Hello", "Dear {{contactPerson}}", List.of()));
+
+        assertThat(result.getSucceededIds()).containsExactly(90L, 91L);
+        assertThat(result.getSkipReasons().get(92L)).contains("Contact person is missing");
+
+        verify(brevoEmailClient).send(eq("one@acme.com"), any(), eq("Dear Rajesh"), any());
+        verify(brevoEmailClient).send(eq("two@acme.com"), any(), eq("Dear Meera"), any());
+        verify(brevoEmailClient, never()).send(eq("three@acme.com"), any(), any(), any());
     }
 
 }

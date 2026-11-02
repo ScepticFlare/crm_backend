@@ -53,6 +53,16 @@ public final class TableExport {
 
     public static final String XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
+    // XLSX date cells are real dates shown in British order (day first), the
+    // same dd/MM/yyyy the CRM screens use, so 04/05/2026 is 4 May in every
+    // copy of Excel whatever its locale. The cell VALUE stays a date, so
+    // sorting, filtering and formulas are unaffected.
+    public static final String XLSX_DATE_FORMAT = "dd/mm/yyyy";
+    public static final String XLSX_DATETIME_FORMAT = "dd/mm/yyyy hh:mm";
+
+    // CSV stays ISO (yyyy-MM-dd) on purpose: it is the machine-readable option,
+    // and Excel reads a dd/MM text date in a CSV with the PC's locale - an
+    // American locale would turn 04/05/2026 into 5 April. ISO is unambiguous.
     private static final DateTimeFormatter CSV_DATE = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final DateTimeFormatter CSV_DATETIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
@@ -184,11 +194,11 @@ public final class TableExport {
             decimal.setDataFormat(formats.getFormat("#,##0.00"));
 
             CellStyle date = workbook.createCellStyle();
-            date.setDataFormat(formats.getFormat("yyyy-mm-dd"));
+            date.setDataFormat(formats.getFormat(XLSX_DATE_FORMAT));
             date.setAlignment(HorizontalAlignment.LEFT);
 
             CellStyle dateTime = workbook.createCellStyle();
-            dateTime.setDataFormat(formats.getFormat("yyyy-mm-dd hh:mm"));
+            dateTime.setDataFormat(formats.getFormat(XLSX_DATETIME_FORMAT));
             dateTime.setAlignment(HorizontalAlignment.LEFT);
 
             int[] widthChars = new int[columns.size()];

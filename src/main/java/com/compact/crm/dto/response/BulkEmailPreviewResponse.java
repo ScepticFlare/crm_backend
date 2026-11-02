@@ -6,7 +6,10 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import com.compact.crm.service.EmailPlaceholderRenderer;
+
 import java.util.List;
+import java.util.Map;
 
 // Result of the review step: every requested record, whether it can be emailed
 // and - if not - exactly why. Contains nothing about records the caller has no
@@ -46,5 +49,11 @@ public class BulkEmailPreviewResponse {
         // This recipient's personalised message (only when subject/body were supplied).
         private String renderedSubject;
         private String renderedBody;
+
+        // How each merge field resolves for this recipient (keyed by every
+        // spelling a {{token}} may use), so the draft editor can show the
+        // template filled in for a chosen recipient. Only for records the
+        // caller may email - never for NOT_AVAILABLE ones.
+        private Map<String, EmailPlaceholderRenderer.FieldValue> mergeFields;
     }
 }

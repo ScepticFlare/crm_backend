@@ -87,11 +87,11 @@ class TableExportTest {
 
         assertThat(DateUtil.isCellDateFormatted(day)).isTrue();
         assertThat(day.getLocalDateTimeCellValue().toLocalDate()).isEqualTo(LocalDate.of(2026, 3, 9));
-        assertThat(day.getCellStyle().getDataFormatString()).isEqualTo("yyyy-mm-dd");
+        assertThat(day.getCellStyle().getDataFormatString()).isEqualTo("dd/mm/yyyy");
 
         assertThat(DateUtil.isCellDateFormatted(stamp)).isTrue();
         assertThat(stamp.getLocalDateTimeCellValue()).isEqualTo(LocalDateTime.of(2026, 3, 9, 14, 5));
-        assertThat(stamp.getCellStyle().getDataFormatString()).isEqualTo("yyyy-mm-dd hh:mm");
+        assertThat(stamp.getCellStyle().getDataFormatString()).isEqualTo("dd/mm/yyyy hh:mm");
     }
 
     @Test
@@ -114,8 +114,8 @@ class TableExportTest {
         // 1 width unit = 1/256 of a character
         assertThat(sheet.getColumnWidth(0)).isGreaterThanOrEqualTo(20 * 256);   // 20-digit phone
         assertThat(sheet.getColumnWidth(3)).isGreaterThanOrEqualTo(12 * 256);   // 1,234,567.50
-        assertThat(sheet.getColumnWidth(4)).isGreaterThanOrEqualTo(12 * 256);   // yyyy-mm-dd
-        assertThat(sheet.getColumnWidth(5)).isGreaterThanOrEqualTo(18 * 256);   // yyyy-mm-dd hh:mm
+        assertThat(sheet.getColumnWidth(4)).isGreaterThanOrEqualTo(12 * 256);   // dd/mm/yyyy
+        assertThat(sheet.getColumnWidth(5)).isGreaterThanOrEqualTo(18 * 256);   // dd/mm/yyyy hh:mm
         assertThat(sheet.getColumnWidth(6)).isGreaterThanOrEqualTo(LONG_NAME.length() * 256);
         // a very long value is capped rather than producing an absurd column
         assertThat(sheet.getColumnWidth(6)).isLessThanOrEqualTo(90 * 256);
@@ -167,6 +167,29 @@ class TableExportTest {
         assertThat(lines[1]).isEqualTo(
                 "00441234567890123456,007,1234567890123,12345678901.5,2026-03-09,2026-03-09 14:05:07,\"Acme, \"\"Best\"\" Ltd\"");
         assertThat(csv).doesNotContain("E+").doesNotContain("E1");
+    }
+
+    // 4 May 2026 is ambiguous between American (05/04) and British (04/05).
+    @Test
+    void anAmbiguousDate_readsDayFirstInXlsx_andStaysIsoInCsv() throws Exception {
+
+        List<Row> rows = List.of(new Row("9876543210", "1", 1L, 1.0,
+                LocalDate.of(2026, 5, 4), LocalDateTime.of(2026, 5, 4, 20, 5), "Acme"));
+
+        try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(TableExport.toXlsx("S", COLUMNS, rows)))) {
+
+            var formatter = new org.apache.poi.ss.usermodel.DataFormatter(java.util.Locale.US);
+            var row = wb.getSheetAt(0).getRow(1);
+
+            // what Excel shows - day first even with a US locale
+            assertThat(formatter.formatCellValue(row.getCell(4))).isEqualTo("04/05/2026");
+            assertThat(formatter.formatCellValue(row.getCell(5))).isEqualTo("04/05/2026 20:05");
+            // and the stored value is still the real date, not text
+            assertThat(row.getCell(4).getLocalDateTimeCellValue().toLocalDate()).isEqualTo(LocalDate.of(2026, 5, 4));
+        }
+
+        String csv = new String(TableExport.toCsv(COLUMNS, rows), StandardCharsets.UTF_8);
+        assertThat(csv).contains(",2026-05-04,2026-05-04 20:05:00,");
     }
 
     // ---- column chooser -> export columns ----

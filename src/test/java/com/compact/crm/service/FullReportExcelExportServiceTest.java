@@ -74,4 +74,34 @@ class FullReportExcelExportServiceTest {
 
         assertThat(sheet.getColumnWidth(companyCol)).isGreaterThanOrEqualTo(60 * 256);
     }
+
+    // 4 May 2030 must read 04/05/2030 (British), never 05/04/2030.
+    @Test
+    void opportunitySheet_showsClosingAndCreatedDatesInBritishFormat() throws Exception {
+
+        com.compact.crm.dto.response.FullReportOpportunityRow row = com.compact.crm.dto.response.FullReportOpportunityRow.builder()
+                .opportunityId(3L).title("AMC").salesStage("IN PROGRESS")
+                .expectedClosingDate(java.time.LocalDate.of(2030, 5, 4))
+                .createdAt(LocalDateTime.of(2030, 5, 4, 9, 30))
+                .build();
+
+        FullReportResponse report = FullReportResponse.builder()
+                .summary(FullReportSummary.builder().productTotals(List.of()).batteryTotals(List.of()).build())
+                .leads(List.of()).opportunities(List.of(row)).customers(List.of())
+                .productLineItems(List.of()).batteryLineItems(List.of())
+                .build();
+
+        byte[] xlsx = new FullReportExcelExportService().export(report, Set.of("OPPORTUNITY"), FullReportService.ALL_SECTIONS);
+
+        XSSFSheet sheet = new XSSFWorkbook(new ByteArrayInputStream(xlsx)).getSheet("Opportunities");
+        var formatter = new org.apache.poi.ss.usermodel.DataFormatter(java.util.Locale.US);
+
+        java.util.Map<String, String> shown = new java.util.HashMap<>();
+        for (Cell h : sheet.getRow(2)) {
+            shown.put(h.getStringCellValue(), formatter.formatCellValue(sheet.getRow(3).getCell(h.getColumnIndex())));
+        }
+
+        assertThat(shown).containsEntry("Expected Closing Date", "04/05/2030")
+                .containsEntry("Created At", "04/05/2030 09:30");
+    }
 }

@@ -353,6 +353,24 @@ class PublicLeadServiceIntegrationTest {
     }
 
     @Test
+    void assigneeNotSet_refusesTheSubmission_andCreatesNoLead() {
+
+        long before = leadRepository.count();
+
+        for (String unset : new String[]{null, "", "   "}) {
+
+            ReflectionTestUtils.setField(publicLeadService, "publicLeadAssigneeEmail", unset);
+
+            assertThatThrownBy(() -> publicLeadService.createPublicLead(
+                    validRequest("website", null), "10.0.0.10"))
+                    .isInstanceOf(com.compact.crm.exception.IntegrationNotConfiguredException.class)
+                    .hasMessage("The enquiry form is temporarily unavailable. Please try again later.");
+        }
+
+        assertThat(leadRepository.count()).isEqualTo(before);
+    }
+
+    @Test
     void perIpRateLimit_blocksSubmissionsAboveTheConfiguredMax() {
 
         String ip = "10.0.0.9";

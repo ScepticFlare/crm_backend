@@ -126,11 +126,11 @@ public class LeadService {
         String invalidReason = validateStatusAndReason(
                 request.getLeadStatus(), null, null, request.getInvalidReason());
 
-        // A new lead must say what the customer wants: at least one Product
-        // and at least one Battery. Checked here (not only in the form) so a
+        // A new lead must say what the customer wants: at least one Product.
+        // Battery is optional. Checked here (not only in the form) so a
         // direct API call cannot skip it. Not a database constraint - older
-        // leads without them still exist and stay editable (see updateLead).
-        requireLineItems(request, true, true);
+        // leads without a product still exist and stay editable (see updateLead).
+        requireProduct(request, true);
 
         Lead lead = Lead.builder()
                 .companyName(request.getCompanyName())
@@ -193,24 +193,17 @@ public class LeadService {
     }
 
     static final String PRODUCT_REQUIRED_MESSAGE = "Please select at least one Product.";
-    static final String BATTERY_REQUIRED_MESSAGE = "Please select at least one Battery.";
 
     // Rows without a selected item are not counted (the form can send an
     // unfilled row); each kept row's id/quantity is validated by @Valid.
-    private static void requireLineItems(LeadRequest request, boolean productRequired, boolean batteryRequired) {
+    // Battery is optional, so there is no battery counterpart.
+    private static void requireProduct(LeadRequest request, boolean productRequired) {
 
         boolean hasProduct = request.getProducts() != null
                 && request.getProducts().stream().anyMatch(p -> p != null && p.getProductId() != null);
 
-        boolean hasBattery = request.getBatteries() != null
-                && request.getBatteries().stream().anyMatch(b -> b != null && b.getBatteryId() != null);
-
         if (productRequired && !hasProduct) {
             throw new IllegalArgumentException(PRODUCT_REQUIRED_MESSAGE);
-        }
-
-        if (batteryRequired && !hasBattery) {
-            throw new IllegalArgumentException(BATTERY_REQUIRED_MESSAGE);
         }
     }
 
@@ -568,10 +561,11 @@ public class LeadService {
         String newInvalidReason = validateStatusAndReason(
                 request.getLeadStatus(), previousStatus, previousInvalidReason, request.getInvalidReason());
 
-        // An existing lead keeps its Product / Battery once it has one (an
-        // edit cannot remove the last one), but an older lead that never had
-        // one can still be edited without inventing a value.
-        requireLineItems(request, !lead.getLeadProducts().isEmpty(), !lead.getLeadBatteries().isEmpty());
+        // An existing lead keeps its Product once it has one (an edit cannot
+        // remove the last one), but an older lead that never had one can still
+        // be edited without inventing a value. Battery is always optional, so
+        // its last one can be removed.
+        requireProduct(request, !lead.getLeadProducts().isEmpty());
 
         lead.setCompanyName(request.getCompanyName());
         lead.setContactPerson(request.getContactPerson());
