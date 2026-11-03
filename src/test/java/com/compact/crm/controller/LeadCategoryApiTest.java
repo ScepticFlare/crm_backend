@@ -221,8 +221,8 @@ class LeadCategoryApiTest {
 
         List<String> companies = new ArrayList<>();
         List<String> phones = new ArrayList<>();
-        int phoneCol = columnOf(sheet, "Phone");
-        int companyCol = columnOf(sheet, "Company");
+        int phoneCol = columnOf(sheet, "mob");
+        int companyCol = columnOf(sheet, "Organisation name");
 
         for (int r = 1; r <= sheet.getLastRowNum(); r++) {
             companies.add(sheet.getRow(r).getCell(companyCol).getStringCellValue());
@@ -247,6 +247,89 @@ class LeadCategoryApiTest {
                 .andReturn().getResponse().getContentAsByteArray();
 
         assertThat(new XSSFWorkbook(new ByteArrayInputStream(invalid)).getSheetAt(0).getLastRowNum()).isEqualTo(1);
+    }
+
+    @Test
+    void leadExport_xlsx_usesTheBusinessLayout_withRelatedRecordsMappedPerRow() throws Exception {
+
+        byte[] bytes = mockMvc.perform(get("/api/leads/export?category=ALL&sortBy=companyName&sortDir=asc")
+                        .header("Authorization", bearer(admin)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+
+        XSSFSheet sheet = new XSSFWorkbook(new ByteArrayInputStream(bytes)).getSheetAt(0);
+
+        List<String> headers = new ArrayList<>();
+        sheet.getRow(0).forEach(c -> headers.add(c.getStringCellValue()));
+
+        assertThat(headers.subList(0, 15)).containsExactly(
+                "S.NO", "date", "today", "age", "Customer name", "mob", "email id", "Organisation name",
+                "location", "ME name", "lead quality", "status-in", "likely conversion", "remarks",
+                "final remarks classification");
+        assertThat(headers.subList(15, headers.size())).contains("Lead Category", "Lead Status", "Invalid Reason");
+
+        // every lead in the admin's scope, serial numbers 1..n in export order
+        assertThat(sheet.getLastRowNum()).isEqualTo(5);
+        for (int r = 1; r <= 5; r++) {
+            assertThat((int) sheet.getRow(r).getCell(0).getNumericCellValue()).isEqualTo(r);
+        }
+
+        Opportunity deal = opportunityRepository.findAll().stream()
+                .filter(o -> "Deal".equals(o.getTitle())).findFirst().orElseThrow();
+
+        int convertedRow = rowOf(sheet, columnOf(sheet, "Organisation name"), "Mk Converted");
+
+        assertThat(cellText(sheet, convertedRow, "ME name")).isEqualTo("Api Staff");
+        assertThat(cellText(sheet, convertedRow, "lead quality")).isEqualTo("VALID");
+        assertThat(cellText(sheet, convertedRow, "status-in")).isEqualTo(deal.getSalesStage().getName());
+        assertThat(cellText(sheet, convertedRow, "Lead Category")).isEqualTo("Converted to opportunity");
+        assertThat(sheet.getRow(convertedRow).getCell(columnOf(sheet, "likely conversion"))
+                .getLocalDateTimeCellValue().toLocalDate()).isEqualTo(java.time.LocalDate.of(2027, 1, 15));
+
+        int invalidRow = rowOf(sheet, columnOf(sheet, "Organisation name"), "Mk Invalid");
+
+        assertThat(cellText(sheet, invalidRow, "lead quality")).isEqualTo("INVALID");
+        assertThat(cellText(sheet, invalidRow, "status-in")).isEqualTo("INVALID");
+        assertThat(cellText(sheet, invalidRow, "Lead Category")).isEqualTo("Invalid");
+        // an unconverted lead never gets a likely-conversion date
+        var likely = sheet.getRow(invalidRow).getCell(columnOf(sheet, "likely conversion"));
+        assertThat(likely == null || likely.getCellType() == CellType.BLANK).isTrue();
+
+        int otherRow = rowOf(sheet, columnOf(sheet, "Organisation name"), "Other New");
+        assertThat(cellText(sheet, otherRow, "ME name")).isEqualTo("Api Staff 2");
+        assertThat(cellText(sheet, otherRow, "status-in")).isEqualTo("NEW");
+    }
+
+    @Test
+    void leadExport_selectedIds_areStillScopedAndNumberedFromOne() throws Exception {
+
+        Lead others = leadRepository.findAll().stream()
+                .filter(l -> "Other New".equals(l.getCompanyName())).findFirst().orElseThrow();
+        Lead mine = leadRepository.findAll().stream()
+                .filter(l -> "Mk Valid".equals(l.getCompanyName())).findFirst().orElseThrow();
+
+        byte[] bytes = mockMvc.perform(get("/api/leads/export?ids=" + mine.getId() + "," + others.getId())
+                        .header("Authorization", bearer(staff)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+
+        XSSFSheet sheet = new XSSFWorkbook(new ByteArrayInputStream(bytes)).getSheetAt(0);
+
+        // the other marketer's lead is silently out of scope
+        assertThat(sheet.getLastRowNum()).isEqualTo(1);
+        assertThat(cellText(sheet, 1, "Organisation name")).isEqualTo("Mk Valid");
+        assertThat((int) sheet.getRow(1).getCell(columnOf(sheet, "S.NO")).getNumericCellValue()).isEqualTo(1);
+    }
+
+    @Test
+    void leadExport_csvKeepsItsOriginalColumns() throws Exception {
+
+        String csv = mockMvc.perform(get("/api/leads/export?format=csv").header("Authorization", bearer(admin)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        String headerLine = csv.replace("﻿", "").lines().findFirst().orElseThrow();
+
+        assertThat(headerLine).isEqualTo("Company,Contact Person,Phone,Alternate Phone,Email,City,State,"
+                + "Lead Category,Lead Status,Invalid Reason,Lead Source,Campaign Code,Industry,"
+                + "Assigned Employee,Created Date");
     }
 
     @Test
@@ -320,6 +403,20 @@ class LeadCategoryApiTest {
             }
         }
         throw new AssertionError("no column " + header);
+    }
+
+    private int rowOf(XSSFSheet sheet, int column, String value) {
+        for (int r = 1; r <= sheet.getLastRowNum(); r++) {
+            var cell = sheet.getRow(r).getCell(column);
+            if (cell != null && value.equals(cell.getStringCellValue())) {
+                return r;
+            }
+        }
+        throw new AssertionError("no row " + value);
+    }
+
+    private String cellText(XSSFSheet sheet, int row, String header) {
+        return sheet.getRow(row).getCell(columnOf(sheet, header)).getStringCellValue();
     }
 
     private String bearer(Employee e) {

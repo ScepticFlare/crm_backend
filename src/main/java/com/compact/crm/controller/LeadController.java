@@ -9,6 +9,8 @@ import com.compact.crm.entity.Lead;
 import com.compact.crm.enums.LeadCategory;
 import com.compact.crm.enums.LeadStatus;
 import com.compact.crm.service.LeadService;
+import com.compact.crm.util.BusinessClock;
+import com.compact.crm.util.LeadExportWorkbook;
 import com.compact.crm.util.TableExport;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -202,6 +204,20 @@ public class LeadController {
         List<Long> idList = parseIds(ids);
         Set<LeadCategory> categories = LeadCategory.parseSelection(category, LeadCategory.ACTIVE);
 
+        // XLSX (default): the business team's lead-sheet layout - see
+        // util.LeadExportWorkbook. Same rows as before; only the layout differs.
+        if (!TableExport.isCsv(format)) {
+
+            LeadService.LeadExportData data = leadService.findForWorkbookExport(
+                    criteria, idList, parseIds(excludeIds), sortBy, sortDir, categories);
+
+            byte[] body = LeadExportWorkbook.toXlsx(
+                    data.leads(), data.opportunityByLeadId(), BusinessClock.today());
+
+            return TableExport.xlsxResponse("leads", body, data.leads().size());
+        }
+
+        // CSV keeps its original column set unchanged.
         // `excludeIds` (no `ids`): every matching lead except these - the
         // "select all N matching records" selection minus unticked rows.
         List<Lead> leads = leadService.findForExport(
@@ -215,7 +231,7 @@ public class LeadController {
                 TableExport.Column.text("Email", Lead::getEmail),
                 TableExport.Column.text("City", Lead::getCity),
                 TableExport.Column.text("State", Lead::getState),
-                TableExport.Column.text("Lead Category", l -> l.getCategory() != null ? categoryLabel(l.getCategory()) : null),
+                TableExport.Column.text("Lead Category", l -> l.getCategory() != null ? LeadExportWorkbook.categoryLabel(l.getCategory()) : null),
                 TableExport.Column.text("Lead Status", l -> l.getLeadStatus() != null ? l.getLeadStatus().name() : null),
                 TableExport.Column.text("Invalid Reason", Lead::getInvalidReason),
                 TableExport.Column.text("Lead Source", l -> l.getLeadSource() != null ? l.getLeadSource().getName() : null),
@@ -226,15 +242,6 @@ public class LeadController {
         );
 
         return TableExport.response("leads", format, "Leads", columns, leads);
-    }
-
-    private static String categoryLabel(LeadCategory category) {
-        return switch (category) {
-            case NEW -> "New";
-            case VALID_UNCONVERTED -> "Valid (not converted)";
-            case INVALID -> "Invalid";
-            case CONVERTED -> "Converted to opportunity";
-        };
     }
 
     private List<Long> parseIds(String ids) {

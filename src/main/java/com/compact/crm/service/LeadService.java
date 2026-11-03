@@ -439,6 +439,43 @@ public class LeadService {
         return leads;
     }
 
+    // Rows for the XLSX lead export plus the related data its business-report
+    // columns need. Same RBAC scope, filters, category, selection, sort and
+    // row cap as findForExport (it delegates to it); additionally loads, in a
+    // few queries per 1,000 rows, each lead's products/batteries and the
+    // Opportunity (with stage) of every converted lead.
+    public record LeadExportData(List<Lead> leads, Map<Long, Opportunity> opportunityByLeadId) {
+    }
+
+    @Transactional
+    public LeadExportData findForWorkbookExport(
+            LeadSearchCriteria criteria, List<Long> ids, List<Long> excludeIds, String sortBy, String sortDir,
+            Set<LeadCategory> categories) {
+
+        List<Lead> leads = findForExport(criteria, ids, excludeIds, sortBy, sortDir, categories);
+
+        List<Long> leadIds = leads.stream().map(Lead::getId).filter(Objects::nonNull).toList();
+        Map<Long, Opportunity> opportunityByLeadId = new java.util.HashMap<>();
+
+        for (int i = 0; i < leadIds.size(); i += 1000) {
+
+            List<Long> chunk = leadIds.subList(i, Math.min(leadIds.size(), i + 1000));
+
+            leadRepository.fetchProducts(chunk);
+            leadRepository.fetchBatteries(chunk);
+
+            // A lead has at most one Opportunity; should legacy data hold
+            // more, the most recently created one is reported.
+            for (Opportunity o : opportunityRepository.findWithStageByLeadIds(chunk)) {
+                opportunityByLeadId.merge(o.getLead().getId(), o, (a, b) ->
+                        Objects.compare(a.getCreatedAt(), b.getCreatedAt(),
+                                java.util.Comparator.nullsFirst(java.util.Comparator.naturalOrder())) >= 0 ? a : b);
+            }
+        }
+
+        return new LeadExportData(leads, opportunityByLeadId);
+    }
+
     // Sets only the `converted` flag (one query per 1,000 leads) - enough to
     // label a lead's category in an export without the heavier UI decoration.
     private void markConverted(List<Lead> leads) {

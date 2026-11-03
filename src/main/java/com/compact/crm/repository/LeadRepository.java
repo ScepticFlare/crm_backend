@@ -121,4 +121,25 @@ public interface LeadRepository extends JpaRepository<Lead, Long>, JpaSpecificat
     List<RecentLeadResponse> findRecentForEmployees(
             @Param("employeeIds") List<Long> employeeIds, Pageable pageable);
 
+    // Export helpers: fetch-join a chunk of already-loaded leads' line items,
+    // initializing those collections on the managed entities in the same
+    // persistence context (results are not used directly). One query per
+    // collection per chunk instead of one lazy load per 50 leads - see
+    // LeadService.findForWorkbookExport.
+    @Query("""
+        SELECT DISTINCT l FROM Lead l
+        LEFT JOIN FETCH l.leadProducts lp
+        LEFT JOIN FETCH lp.product
+        WHERE l.id IN :ids
+    """)
+    List<Lead> fetchProducts(@Param("ids") List<Long> ids);
+
+    @Query("""
+        SELECT DISTINCT l FROM Lead l
+        LEFT JOIN FETCH l.leadBatteries lb
+        LEFT JOIN FETCH lb.battery
+        WHERE l.id IN :ids
+    """)
+    List<Lead> fetchBatteries(@Param("ids") List<Long> ids);
+
 }

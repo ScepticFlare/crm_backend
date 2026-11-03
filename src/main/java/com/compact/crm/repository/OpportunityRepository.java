@@ -160,6 +160,12 @@ public interface OpportunityRepository extends JpaRepository<Opportunity, Long>,
             @Param("date") java.time.LocalDate date,
             @Param("now") java.time.LocalDateTime now);
 
+    // Lead export: the Opportunity (with its stage) of each of these leads,
+    // in one query per chunk - backs the `status-in` / `likely conversion`
+    // columns without a lookup per row. See LeadService.findForWorkbookExport.
+    @Query("SELECT o FROM Opportunity o LEFT JOIN FETCH o.salesStage WHERE o.lead.id IN :leadIds")
+    List<Opportunity> findWithStageByLeadIds(@Param("leadIds") List<Long> leadIds);
+
     // Which of these leads already have an Opportunity (drives "converted").
     @Query("SELECT DISTINCT o.lead.id FROM Opportunity o WHERE o.lead.id IN :leadIds")
     List<Long> findLeadIdsWithOpportunity(@Param("leadIds") List<Long> leadIds);

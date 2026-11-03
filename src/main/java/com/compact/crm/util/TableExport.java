@@ -164,6 +164,19 @@ public final class TableExport {
         return new ResponseEntity<>(body, headers, HttpStatus.OK);
     }
 
+    // Download response for a workbook built elsewhere (e.g. LeadExportWorkbook),
+    // with the same content type, filename and row-count header as response().
+    public static ResponseEntity<byte[]> xlsxResponse(String baseName, byte[] body, int rowCount) {
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(ROW_COUNT_HEADER, String.valueOf(rowCount));
+        headers.setContentType(MediaType.parseMediaType(XLSX_TYPE));
+        headers.setContentDisposition(
+                ContentDisposition.attachment().filename(baseName + ".xlsx", StandardCharsets.UTF_8).build());
+
+        return new ResponseEntity<>(body, headers, HttpStatus.OK);
+    }
+
     // ---------------- XLSX ----------------
 
     public static <T> byte[] toXlsx(String sheetName, List<Column<T>> columns, List<T> rows) {
