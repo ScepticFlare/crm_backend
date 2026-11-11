@@ -1,5 +1,7 @@
 package com.compact.crm.service;
 
+import com.compact.crm.service.mail.MailboxSender;
+
 import com.compact.crm.dto.request.BulkKeepInTouchEmailRequest;
 import com.compact.crm.dto.request.SendLeadEmailRequest;
 import com.compact.crm.dto.response.BulkEmailEligibilityResponse;
@@ -54,7 +56,7 @@ class LeadEmailServiceTest {
     @Mock private EmailTemplateService emailTemplateService;
     @Mock private DocumentService documentService;
     @Mock private ActivityLogService activityLogService;
-    @Mock private BrevoEmailClient brevoEmailClient;
+    @Mock private MailboxSender mailboxSender;
     @Mock private EmailSuppressionService suppressionService;
 
     private LeadEmailService leadEmailService;
@@ -74,7 +76,7 @@ class LeadEmailServiceTest {
 
         leadEmailService = new LeadEmailService(
                 leadRepository, accessControlService, currentUserService,
-                emailTemplateService, documentService, activityLogService, brevoEmailClient,
+                emailTemplateService, documentService, activityLogService, mailboxSender,
                 suppressionService
         );
 
@@ -119,7 +121,7 @@ class LeadEmailServiceTest {
         assertThat(response.isSent()).isTrue();
         assertThat(response.getRecipient()).isEqualTo("rajesh@acme.com");
 
-        verify(brevoEmailClient).send(eq("rajesh@acme.com"), eq("Subject"), eq("Body"), any());
+        verify(mailboxSender).send(any(), eq("rajesh@acme.com"), eq("Subject"), eq("Body"), any());
         verify(activityLogService).log(
                 eq(employeeA), eq(ActivityModule.LEAD), eq(ActivityAction.EMAIL_SENT),
                 eq(10L), eq("ABC Industries"), any());
@@ -144,7 +146,7 @@ class LeadEmailServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("[[...]]");
 
-        verify(brevoEmailClient, org.mockito.Mockito.never()).send(any(), any(), any(), any());
+        verify(mailboxSender, org.mockito.Mockito.never()).send(any(), any(), any(), any(), any());
     }
 
     // A completed AMC email goes through the unchanged single-recipient path
@@ -163,7 +165,7 @@ class LeadEmailServiceTest {
 
         leadEmailService.sendIndividual(41L, request);
 
-        verify(brevoEmailClient).send(eq("rajesh@acme.com"), eq("AMC"), any(), any());
+        verify(mailboxSender).send(any(), eq("rajesh@acme.com"), eq("AMC"), any(), any());
         verify(activityLogService).log(
                 eq(employeeA), eq(ActivityModule.LEAD), eq(ActivityAction.EMAIL_SENT),
                 eq(41L), eq("ABC Industries"), org.mockito.ArgumentMatchers.contains("AMC email"));
@@ -172,11 +174,11 @@ class LeadEmailServiceTest {
     // Multiple attachments: each selected Document's bytes (loaded through
     // DocumentService, which delegates to DocumentStorageService - local
     // disk or Supabase, this test doesn't care which) must reach
-    // BrevoEmailClient as an EmailAttachment carrying that Document's
+    // MailboxSender as an EmailAttachment carrying that Document's
     // fileName and exact bytes, unmodified.
     @SuppressWarnings("unchecked")
     @Test
-    void sendIndividual_withAttachments_passesDocumentBytesToBrevoClient() {
+    void sendIndividual_withAttachments_passesDocumentBytesToMailboxSender() {
 
         grant(employeeRole, EMAIL_SEND, Scope.OWN);
         when(currentUserService.getCurrentEmployee()).thenReturn(employeeA);
@@ -197,7 +199,7 @@ class LeadEmailServiceTest {
         leadEmailService.sendIndividual(13L, request);
 
         ArgumentCaptor<List<EmailAttachment>> captor = ArgumentCaptor.forClass(List.class);
-        verify(brevoEmailClient).send(eq("rajesh@acme.com"), eq("Subject"), eq("Body"), captor.capture());
+        verify(mailboxSender).send(any(), eq("rajesh@acme.com"), eq("Subject"), eq("Body"), captor.capture());
 
         List<EmailAttachment> attachments = captor.getValue();
         assertThat(attachments).hasSize(2);
@@ -222,7 +224,7 @@ class LeadEmailServiceTest {
         assertThatThrownBy(() -> leadEmailService.sendIndividual(11L, request))
                 .isInstanceOf(IllegalArgumentException.class);
 
-        verify(brevoEmailClient, never()).send(any(), any(), any(), any());
+        verify(mailboxSender, never()).send(any(), any(), any(), any(), any());
         verify(activityLogService, never()).log(any(), any(), any(), anyLong(), any(), any());
     }
 
@@ -241,7 +243,7 @@ class LeadEmailServiceTest {
         assertThatThrownBy(() -> leadEmailService.sendIndividual(12L, request))
                 .isInstanceOf(AccessDeniedException.class);
 
-        verify(brevoEmailClient, never()).send(any(), any(), any(), any());
+        verify(mailboxSender, never()).send(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -335,8 +337,8 @@ class LeadEmailServiceTest {
         assertThat(result.getSkipReasons()).containsEntry(41L, "No email address");
         assertThat(result.getSkipReasons()).containsEntry(42L, "Not authorized");
 
-        verify(brevoEmailClient, org.mockito.Mockito.times(1))
-                .send(eq("eligible@acme.com"), any(), any(), any());
+        verify(mailboxSender, org.mockito.Mockito.times(1))
+                .send(any(), eq("eligible@acme.com"), any(), any(), any());
         verify(activityLogService, org.mockito.Mockito.times(1)).log(
                 eq(employeeA), eq(ActivityModule.LEAD), eq(ActivityAction.EMAIL_SENT),
                 eq(40L), any(), any());
@@ -356,7 +358,7 @@ class LeadEmailServiceTest {
 
         doThrow(new IllegalStateException("Unable to send the email. Please try again."))
                 .doNothing()
-                .when(brevoEmailClient).send(any(), any(), any(), any());
+                .when(mailboxSender).send(any(), any(), any(), any(), any());
 
         BulkKeepInTouchEmailRequest request = new BulkKeepInTouchEmailRequest(
                 List.of(50L, 51L), null, "Subject", "Body", List.of());
@@ -387,7 +389,7 @@ class LeadEmailServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("do-not-email");
 
-        verify(brevoEmailClient, never()).send(any(), any(), any(), any());
+        verify(mailboxSender, never()).send(any(), any(), any(), any(), any());
         verify(activityLogService, never()).log(any(), any(), any(), any(), any(), any());
     }
 
@@ -411,8 +413,8 @@ class LeadEmailServiceTest {
         assertThat(result.getSkippedIds()).containsExactly(70L);
         assertThat(result.getSkipReasons()).containsEntry(70L, "On the do-not-email list");
 
-        verify(brevoEmailClient, never()).send(eq("blocked@acme.com"), any(), any(), any());
-        verify(brevoEmailClient).send(eq("fine@acme.com"), any(), any(), any());
+        verify(mailboxSender, never()).send(any(), eq("blocked@acme.com"), any(), any(), any());
+        verify(mailboxSender).send(any(), eq("fine@acme.com"), any(), any(), any());
     }
 
     // ---------------------------------------------------------------- merge fields
@@ -431,7 +433,7 @@ class LeadEmailServiceTest {
         leadEmailService.sendIndividual(80L, new SendLeadEmailRequest(
                 EmailTemplateType.KEEP_IN_TOUCH, null, "News for {{companyName}}", "Dear {{name}},", List.of()));
 
-        verify(brevoEmailClient).send(eq("rajesh@acme.com"), eq("News for ABC Industries"), eq("Dear Rajesh,"), any());
+        verify(mailboxSender).send(any(), eq("rajesh@acme.com"), eq("News for ABC Industries"), eq("Dear Rajesh,"), any());
     }
 
     @Test
@@ -453,7 +455,7 @@ class LeadEmailServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Unsupported field \"nmae\"");
 
-        verify(brevoEmailClient, never()).send(any(), any(), any(), any());
+        verify(mailboxSender, never()).send(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -503,9 +505,9 @@ class LeadEmailServiceTest {
         assertThat(result.getSucceededIds()).containsExactly(90L, 91L);
         assertThat(result.getSkipReasons().get(92L)).contains("Contact person is missing");
 
-        verify(brevoEmailClient).send(eq("one@acme.com"), any(), eq("Dear Rajesh"), any());
-        verify(brevoEmailClient).send(eq("two@acme.com"), any(), eq("Dear Meera"), any());
-        verify(brevoEmailClient, never()).send(eq("three@acme.com"), any(), any(), any());
+        verify(mailboxSender).send(any(), eq("one@acme.com"), any(), eq("Dear Rajesh"), any());
+        verify(mailboxSender).send(any(), eq("two@acme.com"), any(), eq("Dear Meera"), any());
+        verify(mailboxSender, never()).send(any(), eq("three@acme.com"), any(), any(), any());
     }
 
 }

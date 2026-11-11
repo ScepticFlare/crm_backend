@@ -88,6 +88,17 @@ public class SecurityConfig {
                                 "/api/public/industries", "/api/public/products", "/api/public/batteries"
                         ).permitAll()
 
+                        // OAuth redirect back from Google / Microsoft after an
+                        // employee approves connecting their mailbox. A top-level
+                        // browser navigation from the provider carries no JWT; the
+                        // single-use, expiring state stored when the (authenticated)
+                        // employee started the flow identifies them - see
+                        // service.mail.MailboxConnectionService. It only ever answers
+                        // with a redirect to the CRM.
+                        .requestMatchers(
+                                HttpMethod.GET, "/api/email-accounts/oauth/*/callback"
+                        ).permitAll()
+
                         // Employee-management endpoints previously allowed
                         // unauthenticated access here; they now require a
                         // valid token like every other resource. Fine-grained
@@ -144,7 +155,8 @@ public class SecurityConfig {
 
         // Readable by the frontend (cross-origin): how many rows an export
         // contains - see util.TableExport.ROW_COUNT_HEADER.
-        configuration.setExposedHeaders(List.of(com.compact.crm.util.TableExport.ROW_COUNT_HEADER));
+        // Retry-After: when bulk email is paced/throttled (429), how long to wait.
+        configuration.setExposedHeaders(List.of(com.compact.crm.util.TableExport.ROW_COUNT_HEADER, "Retry-After"));
 
         configuration.setAllowCredentials(true);
 

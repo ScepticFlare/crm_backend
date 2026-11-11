@@ -56,7 +56,7 @@ public final class EmailPlaceholderRenderer {
     }
 
     // How substituted values are written. Every send today is plain text
-    // (BrevoEmailClient sends textContent), where escaping would corrupt a
+    // (the providers in service.mail send text/plain), where escaping would corrupt a
     // name like "O'Brien & Sons". HTML is for an HTML body: values are escaped
     // so CRM data can never inject markup into the message.
     public enum Format { TEXT, HTML }

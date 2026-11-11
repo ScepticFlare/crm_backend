@@ -21,7 +21,7 @@ import com.compact.crm.repository.RolePermissionRepository;
 import com.compact.crm.repository.RoleRepository;
 import com.compact.crm.security.JwtService;
 import com.compact.crm.security.UserPrincipal;
-import com.compact.crm.service.BrevoEmailClient;
+import com.compact.crm.service.mail.TokenCipher;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,8 +43,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The CRM as it runs locally without the optional integrations: no Brevo
- * API key, no sender address, no public-lead assignee. The application
+ * The CRM as it runs locally without the optional integrations: no mailbox
+ * token-encryption key or OAuth clients, no public-lead assignee. The application
  * context must start (the rest of the CRM works), and each feature that
  * needs a missing integration must refuse with 503 - never report an email
  * as sent or a public enquiry as received, and leave nothing behind.
@@ -53,8 +53,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
-        "brevo.api-key=",
-        "crm.mail.from-address=",
+        "crm.mail.token-encryption-key=",
+        "crm.mail.google.client-id=",
+        "crm.mail.microsoft.client-id=",
         "crm.public-lead.assignee-email=",
         "crm.public-lead.rate-limit.max-requests=1000"
 })
@@ -64,7 +65,7 @@ class OptionalIntegrationsUnconfiguredTest {
     @Autowired private MockMvc mockMvc;
     @Autowired private ObjectMapper objectMapper;
     @Autowired private JwtService jwtService;
-    @Autowired private BrevoEmailClient brevoEmailClient;
+    @Autowired private TokenCipher tokenCipher;
     @Autowired private EmployeeRepository employeeRepository;
     @Autowired private RoleRepository roleRepository;
     @Autowired private PermissionRepository permissionRepository;
@@ -99,7 +100,7 @@ class OptionalIntegrationsUnconfiguredTest {
     @Test
     void theApplicationStarts_andTheRestOfTheCrmWorks() throws Exception {
 
-        assertThat(brevoEmailClient.isConfigured()).isFalse();
+        assertThat(tokenCipher.isConfigured()).isFalse();
 
         mockMvc.perform(get("/health")).andExpect(status().isOk());
 

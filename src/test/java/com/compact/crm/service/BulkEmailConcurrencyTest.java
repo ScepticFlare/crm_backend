@@ -1,5 +1,10 @@
 package com.compact.crm.service;
 
+import com.compact.crm.enums.MailboxProvider;
+import com.compact.crm.service.mail.EmailSendOutcome;
+import com.compact.crm.service.mail.MailboxSender;
+import com.compact.crm.service.mail.SenderIdentity;
+
 import com.compact.crm.dto.request.BulkEmailRequest;
 import com.compact.crm.dto.response.BulkEmailBatchResponse;
 import com.compact.crm.dto.response.BulkEmailSendResponse;
@@ -52,7 +57,17 @@ import static org.mockito.Mockito.when;
 @SpringBootTest(properties = "spring.jpa.properties.hibernate.enable_lazy_load_no_trans=true")
 class BulkEmailConcurrencyTest {
 
-    @MockitoBean private BrevoEmailClient brevo;
+    @MockitoBean private MailboxSender mailbox;
+
+    // Every send goes out from the signed-in employee's own connected mailbox;
+    // here a fixed, connected Gmail mailbox (the provider itself is mocked).
+    static final SenderIdentity SENDER =
+            new SenderIdentity(1L, 1L, MailboxProvider.GOOGLE, "sender@company.test", "Sender");
+
+    @org.junit.jupiter.api.BeforeEach
+    void connectedMailbox() {
+        org.mockito.Mockito.lenient().when(mailbox.requireReady(org.mockito.ArgumentMatchers.any())).thenReturn(SENDER);
+    }
 
     @Autowired private BulkEmailService bulk;
     @Autowired private EmployeeRepository employeeRepository;
@@ -94,10 +109,10 @@ class BulkEmailConcurrencyTest {
         emp = employeeRepository.save(Employee.builder().name("Conc " + tag).email("conc-" + tag + "@t.test")
                 .phone("98" + String.format("%08d", Math.abs(tag.hashCode()) % 100_000_000)).password("x").role(role).build());
 
-        when(brevo.trySend(any(), any(), any(), any())).thenAnswer(inv -> {
+        when(mailbox.trySend(any(), any(), any(), any(), any())).thenAnswer(inv -> {
             providerCalls.incrementAndGet();
             Thread.sleep(250);                      // a slow provider widens every race window
-            return new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.ACCEPTED, null, null);
+            return new EmailSendOutcome(EmailSendOutcome.Result.ACCEPTED, null, null);
         });
     }
 

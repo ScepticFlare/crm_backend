@@ -45,5 +45,11 @@ public enum ActivityAction {
     // so a Lead's remarks history can be filtered/read back on its own,
     // same "specific verb carries distinct business meaning" convention as
     // ROLE_CHANGED/MANAGER_CHANGED for Employee.
-    REMARKS_UPDATED
+    REMARKS_UPDATED,
+
+    // An employee connected / disconnected their own sending mailbox (Gmail or
+    // Microsoft 365) - logged against ActivityModule.EMPLOYEE, see
+    // service.mail.MailboxConnectionService.
+    MAILBOX_CONNECTED,
+    MAILBOX_DISCONNECTED
 }

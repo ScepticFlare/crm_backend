@@ -164,7 +164,29 @@ public class GlobalExceptionHandler {
                 ex.getMessage()
         );
 
-        return new ResponseEntity<>(error, HttpStatus.TOO_MANY_REQUESTS);
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS);
+
+        if (ex.getRetryAfterSeconds() != null) {
+            response.header(org.springframework.http.HttpHeaders.RETRY_AFTER,
+                    String.valueOf(Math.max(1, ex.getRetryAfterSeconds())));
+        }
+
+        return response.body(error);
+    }
+
+    // The caller's own mailbox is missing / needs reconnecting / is not the one
+    // the batch was started from: a conflict the user resolves, not a server error.
+    @ExceptionHandler(MailboxUnavailableException.class)
+    public ResponseEntity<ApiError> handleMailboxUnavailable(MailboxUnavailableException ex) {
+
+        ApiError error = new ApiError(
+                LocalDateTime.now().toString(),
+                HttpStatus.CONFLICT.value(),
+                ex.getCode(),
+                ex.getMessage()
+        );
+
+        return new ResponseEntity<>(error, HttpStatus.CONFLICT);
     }
 
     @ExceptionHandler(AccessDeniedException.class)

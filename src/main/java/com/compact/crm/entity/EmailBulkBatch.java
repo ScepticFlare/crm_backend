@@ -58,6 +58,16 @@ public class EmailBulkBatch {
     @Column(name = "recipient_count", nullable = false)
     private int recipientCount;
 
+    // The mailbox the batch is sent from, pinned when the batch is created
+    // (V14.1): every chunk must go out from this same address. NULL only for
+    // batches created before the mailbox migration - pinned on their next chunk.
+    @Enumerated(EnumType.STRING)
+    @Column(name = "sender_provider", length = 20)
+    private com.compact.crm.enums.MailboxProvider senderProvider;
+
+    @Column(name = "sender_email", length = 254)
+    private String senderEmail;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 

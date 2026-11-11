@@ -1,5 +1,10 @@
 package com.compact.crm.service;
 
+import com.compact.crm.enums.MailboxProvider;
+import com.compact.crm.service.mail.EmailSendOutcome;
+import com.compact.crm.service.mail.MailboxSender;
+import com.compact.crm.service.mail.SenderIdentity;
+
 import com.compact.crm.dto.request.BulkEmailRequest;
 import com.compact.crm.dto.request.EmailSuppressionRequest;
 import com.compact.crm.dto.response.BulkEmailSendResponse;
@@ -81,7 +86,17 @@ class BulkEmailPostgresFlowTest {
         }
     }
 
-    @MockitoBean private BrevoEmailClient brevo;
+    @MockitoBean private MailboxSender mailbox;
+
+    // Every send goes out from the signed-in employee's own connected mailbox;
+    // here a fixed, connected Gmail mailbox (the provider itself is mocked).
+    static final SenderIdentity SENDER =
+            new SenderIdentity(1L, 1L, MailboxProvider.GOOGLE, "sender@company.test", "Sender");
+
+    @org.junit.jupiter.api.BeforeEach
+    void connectedMailbox() {
+        org.mockito.Mockito.lenient().when(mailbox.requireReady(org.mockito.ArgumentMatchers.any())).thenReturn(SENDER);
+    }
 
     @Autowired private BulkEmailService bulk;
     @Autowired private EmailSuppressionService suppression;
@@ -137,10 +152,10 @@ class BulkEmailPostgresFlowTest {
     }
 
     private void slowProvider() {
-        when(brevo.trySend(any(), any(), any(), any())).thenAnswer(inv -> {
+        when(mailbox.trySend(any(), any(), any(), any(), any())).thenAnswer(inv -> {
             providerCalls.incrementAndGet();
             Thread.sleep(200);
-            return new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.ACCEPTED, null, null);
+            return new EmailSendOutcome(EmailSendOutcome.Result.ACCEPTED, null, null);
         });
     }
 
@@ -183,11 +198,11 @@ class BulkEmailPostgresFlowTest {
 
         String failing = leadRepository.findById(mine.get(1)).orElseThrow().getEmail();
 
-        when(brevo.trySend(any(), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.ACCEPTED, null, null));
-        when(brevo.trySend(eq(failing), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.FAILED, 400, "HTTP 400"))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.ACCEPTED, null, null));
+        when(mailbox.trySend(any(), any(), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.ACCEPTED, null, null));
+        when(mailbox.trySend(any(), eq(failing), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.FAILED, 400, "HTTP 400"))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.ACCEPTED, null, null));
 
         String batch = bulk.createBatch(create(all)).getBatchId();
 
@@ -277,8 +292,8 @@ class BulkEmailPostgresFlowTest {
             leadRepository.save(lead);
         }
 
-        when(brevo.trySend(any(), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.ACCEPTED, null, null));
+        when(mailbox.trySend(any(), any(), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.ACCEPTED, null, null));
 
         // the ADMIN role seeded by V13 may manage the list; the EMPLOYEE role may not
         login(emp);

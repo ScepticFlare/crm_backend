@@ -62,6 +62,15 @@ public class EmailSendLog {
     @Column(name = "sent_by_employee_id")
     private Long sentByEmployeeId;
 
+    // The employee's own mailbox this message was sent from (V14.1). NULL for
+    // rows recorded before the mailbox migration (those went through Brevo).
+    @Enumerated(EnumType.STRING)
+    @Column(name = "sender_provider", length = 20)
+    private com.compact.crm.enums.MailboxProvider senderProvider;
+
+    @Column(name = "sender_email", length = 254)
+    private String senderEmail;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 

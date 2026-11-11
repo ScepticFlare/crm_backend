@@ -15,10 +15,14 @@ import com.compact.crm.enums.ActivityAction;
 import com.compact.crm.enums.ActivityModule;
 import com.compact.crm.enums.DocumentType;
 import com.compact.crm.enums.EmailTemplateType;
+import com.compact.crm.exception.MailboxUnavailableException;
 import com.compact.crm.exception.ResourceNotFoundException;
+import com.compact.crm.exception.TooManyRequestsException;
 import com.compact.crm.repository.LeadRepository;
 import com.compact.crm.security.AccessControlService;
 import com.compact.crm.security.CurrentUserService;
+import com.compact.crm.service.mail.EmailOutcomeUnknownException;
+import com.compact.crm.service.mail.MailboxSender;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -36,7 +40,9 @@ import static com.compact.crm.security.AccessControlService.EMAIL_SEND;
 
 // Orchestrates the Lead email feature end to end: authorization + lookup
 // (Lead, template, documents), placeholder substitution, actually sending
-// through BrevoEmailClient, and activity logging on success. Kept separate
+// from the signed-in employee's OWN connected mailbox (service.mail.MailboxSender
+// - Gmail API or Microsoft Graph; this replaced the shared Brevo account), and
+// activity logging on success. Kept separate
 // from LeadService so that file - already large, already well tested -
 // doesn't grow a second, unrelated responsibility; this class depends on
 // LeadRepository directly rather than routing through LeadService, the same
@@ -52,7 +58,7 @@ public class LeadEmailService {
     private final EmailTemplateService emailTemplateService;
     private final DocumentService documentService;
     private final ActivityLogService activityLogService;
-    private final BrevoEmailClient brevoEmailClient;
+    private final MailboxSender mailboxSender;
     private final EmailSuppressionService suppressionService;
 
     // Prefill for the composer: renders the chosen (or default, if
@@ -116,10 +122,12 @@ public class LeadEmailService {
 
         List<Document> documents = resolveDocuments(request.getDocumentIds());
 
-        sendMail(lead.getEmail(), subject.text(), body.text(), documents);
+        Employee sender = currentUserService.getCurrentEmployee();
+
+        sendMail(sender, lead.getEmail(), subject.text(), body.text(), documents);
 
         activityLogService.log(
-                currentUserService.getCurrentEmployee(),
+                sender,
                 ActivityModule.LEAD, ActivityAction.EMAIL_SENT,
                 lead.getId(), lead.getCompanyName(),
                 describeEmailType(request.getType()) + " sent to " + lead.getEmail()
@@ -179,8 +187,9 @@ public class LeadEmailService {
         Employee currentEmployee = currentUserService.getCurrentEmployee();
         accessControlService.requirePermission(currentEmployee, EMAIL_SEND);
 
-        // Refused as a whole, not reported lead by lead as "Send failed".
-        brevoEmailClient.requireConfigured();
+        // Refused as a whole (no connected/usable mailbox), not reported lead by
+        // lead as "Send failed".
+        mailboxSender.requireReady(currentEmployee);
 
         List<Document> documents = resolveDocuments(request.getDocumentIds());
 
@@ -188,7 +197,17 @@ public class LeadEmailService {
         List<Long> skipped = new ArrayList<>();
         Map<Long, String> skipReasons = new LinkedHashMap<>();
 
+        // Set when the mailbox cannot go on (limit reached, credential refused):
+        // every remaining lead is skipped with that reason instead of being tried.
+        String stopReason = null;
+
         for (Long id : request.getLeadIds()) {
+
+            if (stopReason != null) {
+                skipped.add(id);
+                skipReasons.put(id, stopReason);
+                continue;
+            }
 
             Optional<Lead> leadOpt = leadRepository.findById(id);
 
@@ -232,8 +251,17 @@ public class LeadEmailService {
 
             try {
 
-                sendMail(lead.getEmail(), subject.text(), body.text(), documents);
+                sendMail(currentEmployee, lead.getEmail(), subject.text(), body.text(), documents);
 
+            } catch (MailboxUnavailableException | TooManyRequestsException e) {
+                stopReason = "Not sent - " + e.getMessage();
+                skipped.add(id);
+                skipReasons.put(id, stopReason);
+                continue;
+            } catch (EmailOutcomeUnknownException e) {
+                skipped.add(id);
+                skipReasons.put(id, "Not confirmed - it may have been sent. Check your Sent folder before sending again.");
+                continue;
             } catch (RuntimeException e) {
                 skipped.add(id);
                 skipReasons.put(id, "Send failed");
@@ -355,13 +383,14 @@ public class LeadEmailService {
         };
     }
 
-    private void sendMail(String to, String subject, String body, List<Document> attachments) {
+    // Always from the sending employee's own mailbox - never anyone else's.
+    private void sendMail(Employee sender, String to, String subject, String body, List<Document> attachments) {
 
         List<EmailAttachment> emailAttachments = attachments.stream()
                 .map(document -> new EmailAttachment(document.getFileName(), documentService.loadBytes(document)))
                 .toList();
 
-        brevoEmailClient.send(to, subject, body, emailAttachments);
+        mailboxSender.send(sender, to, subject, body, emailAttachments);
     }
 
 }

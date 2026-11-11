@@ -24,6 +24,12 @@ import com.compact.crm.repository.LeadRepository;
 import com.compact.crm.repository.OpportunityRepository;
 import com.compact.crm.security.AccessControlService;
 import com.compact.crm.security.CurrentUserService;
+import com.compact.crm.exception.MailboxUnavailableException;
+import com.compact.crm.exception.TooManyRequestsException;
+import com.compact.crm.service.mail.EmailSendOutcome;
+import com.compact.crm.service.mail.MailboxProperties;
+import com.compact.crm.service.mail.MailboxSender;
+import com.compact.crm.service.mail.SenderIdentity;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -53,8 +59,10 @@ import static com.compact.crm.security.AccessControlService.EMAIL_SEND;
 import static com.compact.crm.security.AccessControlService.OPPORTUNITY_VIEW;
 
 // Bulk email for Leads and Opportunities: one INDIVIDUAL email per recipient
-// (never a shared To/CC), through the existing BrevoEmailClient and activity
-// log, with the same EMAIL_SEND scope the single-recipient flow uses.
+// (never a shared To/CC), sent FROM THE SIGNED-IN EMPLOYEE'S OWN connected
+// mailbox (Gmail API or Microsoft Graph - see service.mail.MailboxSender; this
+// replaced the shared Brevo account), with the existing activity log and the
+// same EMAIL_SEND scope the single-recipient flow uses.
 //
 // Sending model:
 //  - A BATCH is created first (POST /batches). The SERVER issues its id and pins
@@ -87,6 +95,16 @@ import static com.compact.crm.security.AccessControlService.OPPORTUNITY_VIEW;
 //  - Outcomes: ACCEPTED (provider 2xx - not proof of delivery), FAILED (a 4xx:
 //    definitely not sent, may be retried), UNKNOWN (timeout / 5xx / I-O error: may
 //    have been sent - NEVER resent). A claim abandoned mid-send is UNKNOWN too.
+//    Neither Gmail nor Graph offers an idempotency key, which is why the claim
+//    above - not the provider - is what prevents a duplicate.
+//  - Sender: the batch pins the mailbox it is created with (address + provider);
+//    every chunk must be sent from that same mailbox, and nothing is ever sent
+//    from another employee's mailbox or a shared account. No mailbox -> 409.
+//  - Provider limits: when the mailbox is paced/throttled (429), its credential is
+//    refused, or it is blocked, the chunk STOPS at that recipient (recorded
+//    outcomes are kept, untouched recipients stay NOT_ATTEMPTED) and the request
+//    answers 429 (+ Retry-After) / 409 so the browser pauses and reconciles. A
+//    per-mailbox daily cap (below the provider's own) is enforced from this log.
 //
 // Not @Transactional on purpose: provider calls must not run inside an open DB
 // transaction, and each recipient's outcome is independent.
@@ -114,7 +132,8 @@ public class BulkEmailService {
     private final AccessControlService accessControlService;
     private final CurrentUserService currentUserService;
     private final ActivityLogService activityLogService;
-    private final BrevoEmailClient brevoEmailClient;
+    private final MailboxSender mailboxSender;
+    private final MailboxProperties mailboxProperties;
 
     @Value("${crm.mail.bulk.max-recipients:100}")
     private int maxRecipients = 100;
@@ -173,8 +192,9 @@ public class BulkEmailService {
 
         requireTarget(request.getTarget());
 
-        // No batch is started that could never be sent.
-        brevoEmailClient.requireConfigured();
+        // No batch is started that could never be sent: the caller's own mailbox
+        // must be connected and usable now.
+        SenderIdentity sender = mailboxSender.requireReady(employee);
 
         if (isBlank(request.getSubject()) || isBlank(request.getBody())) {
             throw new IllegalArgumentException("Subject and message are required.");
@@ -201,6 +221,8 @@ public class BulkEmailService {
                 .contentHash(hash(request.getSubject(), request.getBody()))
                 .recipientIds(ids.stream().map(String::valueOf).collect(Collectors.joining(",")))
                 .recipientCount(ids.size())
+                .senderProvider(sender.provider())
+                .senderEmail(sender.emailAddress())
                 .build());
 
         return info(saved, false);
@@ -217,11 +239,13 @@ public class BulkEmailService {
 
         EmailBulkBatch batch = loadBatch(request.getBatchId(), employee, false);
 
-        // Before any recipient is claimed: an unconfigured provider must not
-        // leave claims (or FAILED/UNKNOWN rows) behind.
-        brevoEmailClient.requireConfigured();
-
         verifyUnchanged(batch, request);
+
+        // Before any recipient is claimed: a missing or unusable mailbox must not
+        // leave claims (or FAILED/UNKNOWN rows) behind.
+        SenderIdentity sender = mailboxSender.requireReady(employee);
+
+        requireSameSender(batch, sender);
 
         List<Long> ids = distinctIds(request.getIds(), maxChunk);
 
@@ -264,7 +288,16 @@ public class BulkEmailService {
                 continue;
             }
 
-            done.put(ev.id, deliver(employee, batch, ev));
+            Delivery delivery = deliver(employee, sender, batch, ev);
+
+            done.put(ev.id, delivery.result);
+
+            // The mailbox cannot continue (paced/throttled, credential refused,
+            // blocked): stop here. Recorded outcomes stay recorded; recipients not
+            // reached are untouched and are sent by a later retry/resume.
+            if (delivery.stop != null) {
+                throw delivery.stop;
+            }
         }
 
         List<BulkEmailSendResponse.Result> results = new ArrayList<>();
@@ -425,81 +458,149 @@ public class BulkEmailService {
         }
     }
 
-    private BulkEmailSendResponse.Result deliver(Employee employee, EmailBulkBatch batch, Eval ev) {
+    // A batch is sent from the mailbox it was created with. Batches created
+    // before the mailbox migration (no pinned sender) are pinned now.
+    private void requireSameSender(EmailBulkBatch batch, SenderIdentity sender) {
+
+        if (batch.getSenderEmail() == null) {
+            batch.setSenderEmail(sender.emailAddress());
+            batch.setSenderProvider(sender.provider());
+            batchRepository.save(batch);
+            return;
+        }
+
+        if (!batch.getSenderEmail().equals(sender.emailAddress()) || batch.getSenderProvider() != sender.provider()) {
+            throw new MailboxUnavailableException(MailboxUnavailableException.MISMATCH,
+                    "This batch was started from " + batch.getSenderEmail() + ", but your connected mailbox is now "
+                            + sender.emailAddress() + ". Reconnect " + batch.getSenderEmail()
+                            + " to continue it, or start a new batch.");
+        }
+    }
+
+    // A recipient's result, plus - when the mailbox cannot go on - the exception
+    // that stops the rest of the chunk.
+    private record Delivery(BulkEmailSendResponse.Result result, RuntimeException stop) {
+        static Delivery of(BulkEmailSendResponse.Result result) {
+            return new Delivery(result, null);
+        }
+    }
+
+    private Delivery deliver(Employee employee, SenderIdentity sender, EmailBulkBatch batch, Eval ev) {
 
         String batchId = batch.getBatchId();
         String email = ev.email;
 
-        Optional<EmailSendLog> existing = sendLogRepository.findByBatchIdAndTargetAndTargetId(
-                batchId, batch.getTarget(), ev.id);
+        // Per-mailbox daily cap, below the provider's own limit (an attempt that
+        // may have gone out counts too).
+        int dailyLimit = mailboxProperties.dailyLimit(sender.provider());
+
+        if (dailyLimit > 0 && sendLogRepository.countSenderActiveSince(
+                sender.emailAddress(), ACTIVE, LocalDateTime.now().minusHours(24)) >= dailyLimit) {
+
+            return new Delivery(result(ev, "NOT_ATTEMPTED", "Not sent - daily sending limit reached.", false),
+                    new TooManyRequestsException("Your mailbox has reached the CRM's daily limit of " + dailyLimit
+                            + " bulk emails (" + sender.provider().label() + " limits apply). "
+                            + "The remaining recipients were not sent - continue this batch tomorrow."));
+        }
 
         EmailSendLog row;
         boolean retried = false;
 
-        if (existing.isPresent()) {
+        // Claim + re-check run under a per-address lock, so two requests claiming
+        // the same address (two batches, or two records sharing it) are serialized:
+        // the one that enters second always sees the first one's committed claim.
+        // (Comparing claim ids alone is not enough: a sequence id can be allocated
+        // before a LOWER id is committed.) Never held across the provider call.
+        // In-process - the CRM runs a single instance.
+        synchronized (addressLock(email)) {
 
-            row = existing.get();
+            Optional<EmailSendLog> existing = sendLogRepository.findByBatchIdAndTargetAndTargetId(
+                    batchId, batch.getTarget(), ev.id);
 
-            // Only a confirmed FAILED may be retried - and only one request may win it.
-            if (sendLogRepository.transition(row.getId(), EmailSendStatus.FAILED, EmailSendStatus.PENDING,
-                    null, LocalDateTime.now()) != 1) {
+            if (existing.isPresent()) {
 
-                BulkEmailSendResponse.Result recorded = sendLogRepository.findById(row.getId())
-                        .map(this::replay).orElse(null);
+                row = existing.get();
 
-                return recorded != null
-                        ? recorded
-                        : fromRow(row, "IN_PROGRESS", true);
+                // Only a confirmed FAILED may be retried - and only one request may win it.
+                if (sendLogRepository.transition(row.getId(), EmailSendStatus.FAILED, EmailSendStatus.PENDING,
+                        null, LocalDateTime.now()) != 1) {
+
+                    BulkEmailSendResponse.Result recorded = sendLogRepository.findById(row.getId())
+                            .map(this::replay).orElse(null);
+
+                    return Delivery.of(recorded != null
+                            ? recorded
+                            : fromRow(row, "IN_PROGRESS", true));
+                }
+
+                row = sendLogRepository.findById(row.getId()).orElse(row);
+                row.setRecipientEmail(email);
+                row.setRecordLabel(label(ev));
+                row.setSenderProvider(sender.provider());
+                row.setSenderEmail(sender.emailAddress());
+                retried = true;
+
+            } else {
+
+                row = EmailSendLog.builder()
+                        .batchId(batchId)
+                        .target(batch.getTarget())
+                        .targetId(ev.id)
+                        .recordLabel(label(ev))
+                        .recipientEmail(email)
+                        .status(EmailSendStatus.PENDING)
+                        .templateId(batch.getTemplateId())
+                        .sentByEmployeeId(employee.getId())
+                        .senderProvider(sender.provider())
+                        .senderEmail(sender.emailAddress())
+                        .build();
+
+                try {
+                    row = sendLogRepository.saveAndFlush(row);
+                } catch (DataIntegrityViolationException e) {
+                    // A concurrent request claimed this recipient first.
+                    return Delivery.of(result(ev, "IN_PROGRESS", "Already being sent by another request.", true));
+                }
             }
 
-            row = sendLogRepository.findById(row.getId()).orElse(row);
-            row.setRecipientEmail(email);
-            row.setRecordLabel(label(ev));
-            retried = true;
-
-        } else {
-
-            row = EmailSendLog.builder()
-                    .batchId(batchId)
-                    .target(batch.getTarget())
-                    .targetId(ev.id)
-                    .recordLabel(label(ev))
-                    .recipientEmail(email)
-                    .status(EmailSendStatus.PENDING)
-                    .templateId(batch.getTemplateId())
-                    .sentByEmployeeId(employee.getId())
-                    .build();
-
-            try {
-                row = sendLogRepository.saveAndFlush(row);
-            } catch (DataIntegrityViolationException e) {
-                // A concurrent request claimed this recipient first.
-                return result(ev, "IN_PROGRESS", "Already being sent by another request.", true);
+            // Checked AGAIN now that the claim exists, immediately before the provider is called:
+            //  - the do-not-email list (an entry added since the preview still wins);
+            //  - any other active claim on the same address (another batch, or another
+            //    record of this batch, claiming at the same instant): the first one wins.
+            if (suppressionService.isSuppressed(email)) {
+                release(row, retried, "Address is on the do-not-email list");
+                return Delivery.of(excluded(ev, "SUPPRESSED", SUPPRESSED_MESSAGE));
             }
+
+            if (sendLogRepository.countOtherActiveClaims(
+                    email, row.getId(), ACTIVE, windowStart()) > 0) {
+                release(row, retried, "Another attempt to this address is recorded");
+                return Delivery.of(excluded(ev, "RECENTLY_EMAILED", recentMessage()));
+            }
+
         }
 
-        // Checked AGAIN now that the claim exists, immediately before the provider is called:
-        //  - the do-not-email list (an entry added since the preview still wins);
-        //  - an earlier claim on the same address (another batch, or another record of
-        //    this batch, claiming at the same instant): the lowest claim id wins.
-        if (suppressionService.isSuppressed(email)) {
-            release(row, retried, "Address is on the do-not-email list");
-            return excluded(ev, "SUPPRESSED", SUPPRESSED_MESSAGE);
-        }
-
-        if (sendLogRepository.countEarlierActiveClaims(
-                email, row.getId(), ACTIVE, windowStart()) > 0) {
-            release(row, retried, "Another attempt to this address is recorded");
-            return excluded(ev, "RECENTLY_EMAILED", recentMessage());
-        }
-
-        BrevoEmailClient.SendOutcome outcome;
+        EmailSendOutcome outcome;
 
         try {
-            outcome = brevoEmailClient.trySend(email, ev.dto.getRenderedSubject(), ev.dto.getRenderedBody(), List.of());
+            outcome = mailboxSender.trySend(sender, email, ev.dto.getRenderedSubject(), ev.dto.getRenderedBody(),
+                    batchId + ":" + batch.getTarget() + ":" + ev.id);
         } catch (RuntimeException e) {
             log.warn("Bulk email: unexpected error while sending, outcome unknown ({})", e.getClass().getSimpleName());
-            outcome = new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.UNKNOWN, null, "Unexpected error while sending");
+            outcome = new EmailSendOutcome(EmailSendOutcome.Result.UNKNOWN, null, "Unexpected error while sending");
+        }
+
+        RuntimeException stop = outcome.signal() == EmailSendOutcome.Signal.NONE
+                ? null : MailboxSender.toException(outcome);
+
+        // Never handed to the provider (paced, credential refused before sending,
+        // sign-in service unreachable): nothing was sent, so the claim is released
+        // exactly as for a suppressed address - the recipient stays sendable.
+        if (!outcome.providerCalled()) {
+            release(row, retried, outcome.detail());
+            return new Delivery(result(ev, retried ? "FAILED" : "NOT_ATTEMPTED",
+                    "Not sent - " + (outcome.detail() == null ? "the mailbox could not send" : outcome.detail()), false),
+                    stop);
         }
 
         EmailSendStatus status = switch (outcome.result()) {
@@ -523,7 +624,19 @@ public class BulkEmailService {
             logActivity(employee, batch.getTarget(), ev, email);
         }
 
-        return result(ev, status.name(), outcome.detail(), false);
+        return new Delivery(result(ev, status.name(), outcome.detail(), false), stop);
+    }
+
+    private static final Object[] ADDRESS_LOCKS = new Object[256];
+
+    static {
+        for (int i = 0; i < ADDRESS_LOCKS.length; i++) {
+            ADDRESS_LOCKS[i] = new Object();
+        }
+    }
+
+    private static Object addressLock(String email) {
+        return ADDRESS_LOCKS[Math.floorMod(email.hashCode(), ADDRESS_LOCKS.length)];
     }
 
     // Nothing was sent: a fresh claim is removed; a retried FAILED goes back to FAILED.

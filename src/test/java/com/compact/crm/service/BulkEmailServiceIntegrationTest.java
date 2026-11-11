@@ -1,5 +1,10 @@
 package com.compact.crm.service;
 
+import com.compact.crm.enums.MailboxProvider;
+import com.compact.crm.service.mail.EmailSendOutcome;
+import com.compact.crm.service.mail.MailboxSender;
+import com.compact.crm.service.mail.SenderIdentity;
+
 import com.compact.crm.dto.request.BulkEmailRequest;
 import com.compact.crm.dto.request.EmailTemplateRequest;
 import com.compact.crm.dto.response.BulkEmailPreviewResponse;
@@ -56,14 +61,24 @@ import static org.mockito.Mockito.when;
 
 /**
  * Bulk email on a real H2 database with the real services and a FAKE email
- * transport (BrevoEmailClient is mocked - no real email is ever sent).
+ * transport (MailboxSender is mocked - no real email is ever sent).
  */
 @DataJpaTest
-@Import({BulkEmailService.class, EmailTemplateService.class, ActivityLogService.class,
+@Import({BulkEmailService.class, com.compact.crm.service.mail.MailboxProperties.class, EmailTemplateService.class, ActivityLogService.class,
         AccessControlService.class, CurrentUserService.class, EmailSuppressionService.class})
 class BulkEmailServiceIntegrationTest {
 
-    @MockitoBean private BrevoEmailClient brevo;
+    @MockitoBean private MailboxSender mailbox;
+
+    // Every send goes out from the signed-in employee's own connected mailbox;
+    // here a fixed, connected Gmail mailbox (the provider itself is mocked).
+    static final SenderIdentity SENDER =
+            new SenderIdentity(1L, 1L, MailboxProvider.GOOGLE, "sender@company.test", "Sender");
+
+    @org.junit.jupiter.api.BeforeEach
+    void connectedMailbox() {
+        org.mockito.Mockito.lenient().when(mailbox.requireReady(org.mockito.ArgumentMatchers.any())).thenReturn(SENDER);
+    }
 
     @Autowired private BulkEmailService bulk;
     @MockitoSpyBean private EmailSuppressionService suppression;
@@ -136,8 +151,8 @@ class BulkEmailServiceIntegrationTest {
                 .contactPerson(b1.getContactPerson()).contactEmail(b1.getEmail()).build());
 
         // every send is accepted unless a test says otherwise
-        when(brevo.trySend(any(), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.ACCEPTED, null, null));
+        when(mailbox.trySend(any(), any(), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.ACCEPTED, null, null));
 
         authenticateAs(empA);
     }
@@ -165,7 +180,7 @@ class BulkEmailServiceIntegrationTest {
                 List.of(b1.getId(), 999_999L), "Subject", "Body");
 
         assertThat(sent.getExcluded()).isEqualTo(2);
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
         assertThat(sendLogRepository.count()).isZero();
     }
 
@@ -251,8 +266,8 @@ class BulkEmailServiceIntegrationTest {
 
         sendNew(BulkEmailTarget.LEAD, List.of(a1.getId(), a6.getId()), "For {{companyName}}", "Dear {{name}}");
 
-        verify(brevo).trySend(eq("a1@acme.test"), eq("For Acme Ltd"), eq("Dear Asha"), any());
-        verify(brevo).trySend(eq("a6@acme.test"), eq("For Zed Corp"), eq("Dear Zed"), any());
+        verify(mailbox).trySend(any(), eq("a1@acme.test"), eq("For Acme Ltd"), eq("Dear Asha"), any());
+        verify(mailbox).trySend(any(), eq("a6@acme.test"), eq("For Zed Corp"), eq("Dear Zed"), any());
     }
 
     @Test
@@ -298,7 +313,7 @@ class BulkEmailServiceIntegrationTest {
 
         assertThat(sent.getAccepted()).isEqualTo(2);
         assertThat(sent.getExcluded()).isEqualTo(1);
-        verify(brevo, times(2)).trySend(any(), any(), any(), any());
+        verify(mailbox, times(2)).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -310,7 +325,7 @@ class BulkEmailServiceIntegrationTest {
         BulkEmailSendResponse second = bulk.send(chunk(batch, List.of(a4.getId())));
 
         assertThat(second.getResults().get(0).getOutcome()).isEqualTo("EXCLUDED");
-        verify(brevo, times(1)).trySend(any(), any(), any(), any());
+        verify(mailbox, times(1)).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -356,7 +371,7 @@ class BulkEmailServiceIntegrationTest {
         assertThatThrownBy(() -> bulk.preview(request(BulkEmailTarget.LEAD, withNull, "S", "B")))
                 .isInstanceOf(IllegalArgumentException.class);
 
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -367,7 +382,7 @@ class BulkEmailServiceIntegrationTest {
 
         assertThat(sent.getAccepted()).isZero();
         assertThat(sent.getExcluded()).isEqualTo(2);
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
     }
 
     // ============================================================ personalisation / templates
@@ -382,7 +397,7 @@ class BulkEmailServiceIntegrationTest {
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
 
-        verify(brevo, times(2)).trySend(to.capture(), subject.capture(), body.capture(), any());
+        verify(mailbox, times(2)).trySend(any(), to.capture(), subject.capture(), body.capture(), any());
 
         // one address per call - never a shared To/CC list
         assertThat(to.getAllValues()).containsExactly("a1@acme.test", "a6@acme.test");
@@ -400,7 +415,7 @@ class BulkEmailServiceIntegrationTest {
 
         assertThat(sent.getExcluded()).isEqualTo(1);
         assertThat(sent.getResults().get(0).getDetail()).contains("Unsupported field \"nope\"").contains("[[...]]");
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -423,7 +438,7 @@ class BulkEmailServiceIntegrationTest {
         assertThat(reloaded.getSubject()).isEqualTo("Shared subject {{contactPerson}}");
         assertThat(reloaded.getBody()).isEqualTo("Shared body {{companyName}}");
 
-        verify(brevo).trySend(eq("a1@acme.test"), eq("My edited subject"), eq("My edited body for Acme Ltd"), any());
+        verify(mailbox).trySend(any(), eq("a1@acme.test"), eq("My edited subject"), eq("My edited body for Acme Ltd"), any());
     }
 
     @Test
@@ -441,7 +456,7 @@ class BulkEmailServiceIntegrationTest {
 
         assertThatThrownBy(() -> bulk.createBatch(request))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("no longer active");
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -470,10 +485,10 @@ class BulkEmailServiceIntegrationTest {
     @Test
     void partialFailuresAreReportedPerRecipient() {
 
-        when(brevo.trySend(eq("a6@acme.test"), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.FAILED, 400, "HTTP 400: invalid"));
-        when(brevo.trySend(eq("a5@acme.test"), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.UNKNOWN, null, "timeout"));
+        when(mailbox.trySend(any(), eq("a6@acme.test"), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.FAILED, 400, "HTTP 400: invalid"));
+        when(mailbox.trySend(any(), eq("a5@acme.test"), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.UNKNOWN, null, "timeout"));
 
         a5.setContactPerson("Eve");
         leadRepository.save(a5);
@@ -503,17 +518,17 @@ class BulkEmailServiceIntegrationTest {
         assertThat(first.getAccepted()).isEqualTo(2);
         assertThat(second.getAccepted()).isEqualTo(2);
         assertThat(second.getResults()).allMatch(BulkEmailSendResponse.Result::isAlreadyProcessed);
-        verify(brevo, times(2)).trySend(any(), any(), any(), any());   // 2 recipients, once each
+        verify(mailbox, times(2)).trySend(any(), any(), any(), any(), any());   // 2 recipients, once each
     }
 
     @Test
     void aConfirmedFailureCanBeRetried_butAnAmbiguousOutcomeIsNeverResent() {
 
-        when(brevo.trySend(eq("a6@acme.test"), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.FAILED, 429, "HTTP 429: rate limit"))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.ACCEPTED, null, null));
-        when(brevo.trySend(eq("a1@acme.test"), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.UNKNOWN, null, "read timeout"));
+        when(mailbox.trySend(any(), eq("a6@acme.test"), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.FAILED, 429, "HTTP 429: rate limit"))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.ACCEPTED, null, null));
+        when(mailbox.trySend(any(), eq("a1@acme.test"), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.UNKNOWN, null, "read timeout"));
 
         String batch = newBatch(BulkEmailTarget.LEAD, List.of(a1.getId(), a6.getId()), "Hi", "Dear {{contactPerson}}");
         BulkEmailRequest request = chunk(batch, List.of(a1.getId(), a6.getId()));
@@ -526,8 +541,8 @@ class BulkEmailServiceIntegrationTest {
 
         assertThat(outcome(retry, a6)).isEqualTo("ACCEPTED");   // confirmed failure -> safely retried
         assertThat(outcome(retry, a1)).isEqualTo("UNKNOWN");    // ambiguous -> NOT resent
-        verify(brevo, times(1)).trySend(eq("a1@acme.test"), any(), any(), any());
-        verify(brevo, times(2)).trySend(eq("a6@acme.test"), any(), any(), any());
+        verify(mailbox, times(1)).trySend(any(), eq("a1@acme.test"), any(), any(), any());
+        verify(mailbox, times(2)).trySend(any(), eq("a6@acme.test"), any(), any(), any());
     }
 
     @Test
@@ -550,7 +565,7 @@ class BulkEmailServiceIntegrationTest {
         BulkEmailSendResponse sent = bulk.send(chunk(batch, List.of(a1.getId())));
 
         assertThat(outcome(sent, a1)).isEqualTo("UNKNOWN");
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -566,7 +581,7 @@ class BulkEmailServiceIntegrationTest {
         BulkEmailSendResponse sent = bulk.send(chunk(batch, List.of(a1.getId())));
 
         assertThat(outcome(sent, a1)).isEqualTo("IN_PROGRESS");
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -581,7 +596,7 @@ class BulkEmailServiceIntegrationTest {
         BulkEmailSendResponse sent = bulk.send(chunk(batch, List.of(a1.getId())));
 
         assertThat(outcome(sent, a1)).isEqualTo("EXCLUDED");
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -605,8 +620,8 @@ class BulkEmailServiceIntegrationTest {
     @Test
     void onlyAcceptedSendsAreActivityLogged_withoutTheMessageText() {
 
-        when(brevo.trySend(eq("a6@acme.test"), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.FAILED, 400, "HTTP 400"));
+        when(mailbox.trySend(any(), eq("a6@acme.test"), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.FAILED, 400, "HTTP 400"));
 
         sendNew(BulkEmailTarget.LEAD, List.of(a1.getId(), a6.getId()), "Hi", "SECRET-BODY-TEXT");
 
@@ -701,7 +716,7 @@ class BulkEmailServiceIntegrationTest {
         otherTemplate.setTemplateId(987_654L);
         assertThatThrownBy(() -> bulk.send(otherTemplate)).isInstanceOf(IllegalArgumentException.class);
 
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
 
         // restating the SAME content is accepted, and the batch's stored message is what goes out
         BulkEmailRequest same = chunk(batch, List.of(a1.getId()));
@@ -710,7 +725,7 @@ class BulkEmailServiceIntegrationTest {
         same.setBody("Body {{contactPerson}}");
 
         assertThat(bulk.send(same).getAccepted()).isEqualTo(1);
-        verify(brevo).trySend(eq("a1@acme.test"), eq("Subj"), eq("Body Asha"), any());
+        verify(mailbox).trySend(any(), eq("a1@acme.test"), eq("Subj"), eq("Body Asha"), any());
     }
 
     @Test
@@ -725,7 +740,7 @@ class BulkEmailServiceIntegrationTest {
 
         assertThatThrownBy(() -> bulk.send(chunk(batch, twelve)))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("At most 10");
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -748,7 +763,7 @@ class BulkEmailServiceIntegrationTest {
         assertThatThrownBy(() -> bulk.results("00000000-0000-0000-0000-000000000000"))
                 .isInstanceOf(com.compact.crm.exception.ResourceNotFoundException.class);
 
-        verify(brevo, times(1)).trySend(any(), any(), any(), any());
+        verify(mailbox, times(1)).trySend(any(), any(), any(), any(), any());
     }
 
     // ============================================================ cross-batch duplicate protection
@@ -763,7 +778,7 @@ class BulkEmailServiceIntegrationTest {
         assertThat(again.getAccepted()).isZero();
         assertThat(again.getExcluded()).isEqualTo(2);
         assertThat(again.getResults()).allMatch(r -> "RECENTLY_EMAILED".equals(r.getExclusionCode()));
-        verify(brevo, times(2)).trySend(any(), any(), any(), any());      // the first batch only
+        verify(mailbox, times(2)).trySend(any(), any(), any(), any(), any());      // the first batch only
 
         // the review step says so too, before anything is attempted
         BulkEmailPreviewResponse preview = bulk.preview(request(BulkEmailTarget.LEAD, List.of(a1.getId()), "S", "B"));
@@ -773,8 +788,8 @@ class BulkEmailServiceIntegrationTest {
     @Test
     void anUnknownOutcome_isNeverResentThroughANewBatch_orAnotherRecordWithTheSameAddress() {
 
-        when(brevo.trySend(eq("a1@acme.test"), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.UNKNOWN, null, "read timeout"));
+        when(mailbox.trySend(any(), eq("a1@acme.test"), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.UNKNOWN, null, "read timeout"));
 
         assertThat(outcome(sendNew(BulkEmailTarget.LEAD, List.of(a1.getId()), "Hi", "Hello"), a1)).isEqualTo("UNKNOWN");
 
@@ -790,7 +805,7 @@ class BulkEmailServiceIntegrationTest {
         BulkEmailSendResponse viaOpportunity = sendNew(BulkEmailTarget.OPPORTUNITY, List.of(oppA1.getId()), "Hi", "Hello");
         assertThat(viaOpportunity.getResults().get(0).getExclusionCode()).isEqualTo("RECENTLY_EMAILED");
 
-        verify(brevo, times(1)).trySend(eq("a1@acme.test"), any(), any(), any());
+        verify(mailbox, times(1)).trySend(any(), eq("a1@acme.test"), any(), any(), any());
     }
 
     @Test
@@ -804,15 +819,15 @@ class BulkEmailServiceIntegrationTest {
         BulkEmailSendResponse.Result r = adminBatch.getResults().get(0);
         assertThat(r.getExclusionCode()).isEqualTo("RECENTLY_EMAILED");
         assertThat(r.getDetail()).doesNotContain("Emp A").doesNotContain("ea@t.test");
-        verify(brevo, times(1)).trySend(any(), any(), any(), any());
+        verify(mailbox, times(1)).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
     void aConfirmedFailure_mayBeRetriedThroughANewBatch_andProtectionExpiresWithTheWindow() {
 
-        when(brevo.trySend(eq("a6@acme.test"), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.FAILED, 400, "HTTP 400"))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.ACCEPTED, null, null));
+        when(mailbox.trySend(any(), eq("a6@acme.test"), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.FAILED, 400, "HTTP 400"))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.ACCEPTED, null, null));
 
         assertThat(outcome(sendNew(BulkEmailTarget.LEAD, List.of(a1.getId(), a6.getId()), "Hi", "Hello"), a6)).isEqualTo("FAILED");
 
@@ -855,14 +870,14 @@ class BulkEmailServiceIntegrationTest {
         BulkEmailSendResponse view = bulk.results(batch);
         assertThat(view.getAccepted()).isEqualTo(2);
         assertThat(view.getResults()).extracting(BulkEmailSendResponse.Result::getOutcome).containsOnly("ACCEPTED");
-        verify(brevo, times(2)).trySend(any(), any(), any(), any());
+        verify(mailbox, times(2)).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
     void aRecipientWhoseRecordStopsQualifyingMidBatch_isExcludedForRealButNeverResent() {
 
-        when(brevo.trySend(eq("a6@acme.test"), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.FAILED, 400, "HTTP 400"));
+        when(mailbox.trySend(any(), eq("a6@acme.test"), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.FAILED, 400, "HTTP 400"));
 
         String batch = newBatch(BulkEmailTarget.LEAD, List.of(a1.getId(), a6.getId(), a5.getId()), "Hi", "Hello");
 
@@ -882,7 +897,7 @@ class BulkEmailServiceIntegrationTest {
         assertThat(view.getAccepted()).isEqualTo(1);
         assertThat(view.getFailed() + view.getExcluded()).isEqualTo(2);
         assertThat(view.getResults()).hasSize(3);
-        verify(brevo, times(2)).trySend(any(), any(), any(), any());       // a1 and the one failed attempt of a6
+        verify(mailbox, times(2)).trySend(any(), any(), any(), any(), any());       // a1 and the one failed attempt of a6
     }
 
     @Test
@@ -898,7 +913,7 @@ class BulkEmailServiceIntegrationTest {
         rolePermissionRepository.flush();
 
         assertThatThrownBy(() -> bulk.send(chunk(batch, List.of(a6.getId())))).isInstanceOf(AccessDeniedException.class);
-        verify(brevo, times(1)).trySend(any(), any(), any(), any());
+        verify(mailbox, times(1)).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -961,8 +976,8 @@ class BulkEmailServiceIntegrationTest {
 
         assertThat(sent.getAccepted()).isEqualTo(1);
         assertThat(sent.getResults().stream().filter(r -> "SUPPRESSED".equals(r.getExclusionCode())).count()).isEqualTo(2);
-        verify(brevo, times(1)).trySend(any(), any(), any(), any());
-        verify(brevo, never()).trySend(eq("a1@acme.test"), any(), any(), any());
+        verify(mailbox, times(1)).trySend(any(), any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), eq("a1@acme.test"), any(), any(), any());
 
         // opportunities of the suppressed lead are blocked as well
         assertThat(sendNew(BulkEmailTarget.OPPORTUNITY, List.of(oppA1.getId()), "Hi", "Hello")
@@ -980,7 +995,7 @@ class BulkEmailServiceIntegrationTest {
 
         assertThat(outcome(sent, a1)).isEqualTo("EXCLUDED");
         assertThat(outcome(sent, a6)).isEqualTo("ACCEPTED");
-        verify(brevo, never()).trySend(eq("a1@acme.test"), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), eq("a1@acme.test"), any(), any(), any());
     }
 
     @Test
@@ -994,7 +1009,7 @@ class BulkEmailServiceIntegrationTest {
         BulkEmailSendResponse sent = sendNew(BulkEmailTarget.LEAD, List.of(a1.getId()), "Hi", "Hello");
 
         assertThat(sent.getResults().get(0).getExclusionCode()).isEqualTo("SUPPRESSED");
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
         assertThat(sendLogRepository.count()).isZero();                    // the claim was released
     }
 
@@ -1031,14 +1046,14 @@ class BulkEmailServiceIntegrationTest {
         suppress("flow8@flow.test");                        // #8 is on the do-not-email list
 
         for (int i : new int[]{10, 11, 12}) {               // confirmed rejection first, accepted on retry
-            when(brevo.trySend(eq("flow" + i + "@flow.test"), any(), any(), any()))
-                    .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.FAILED, 400, "HTTP 400: rejected"))
-                    .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.ACCEPTED, null, null));
+            when(mailbox.trySend(any(), eq("flow" + i + "@flow.test"), any(), any(), any()))
+                    .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.FAILED, 400, "HTTP 400: rejected"))
+                    .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.ACCEPTED, null, null));
         }
 
         for (int i : new int[]{20, 21}) {                   // ambiguous
-            when(brevo.trySend(eq("flow" + i + "@flow.test"), any(), any(), any()))
-                    .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.UNKNOWN, null, "read timeout"));
+            when(mailbox.trySend(any(), eq("flow" + i + "@flow.test"), any(), any(), any()))
+                    .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.UNKNOWN, null, "read timeout"));
         }
 
         List<Long> ids = leads.stream().map(Lead::getId).toList();
@@ -1065,7 +1080,7 @@ class BulkEmailServiceIntegrationTest {
         assertThat(view.getNotAttempted() + view.getInProgress()).isZero();
         assertThat(view.getAccepted() + view.getFailed() + view.getUnknown() + view.getExcluded()).isEqualTo(100);
 
-        verify(brevo, times(92)).trySend(any(), any(), any(), any());      // 87 + 3 + 2
+        verify(mailbox, times(92)).trySend(any(), any(), any(), any(), any());      // 87 + 3 + 2
 
         // retry exactly the confirmed failures
         BulkEmailSendResponse retry = bulk.send(chunk(batch,
@@ -1077,8 +1092,8 @@ class BulkEmailServiceIntegrationTest {
         assertThat(after.getFailed()).isZero();
         assertThat(after.getUnknown()).isEqualTo(2);
 
-        verify(brevo, times(95)).trySend(any(), any(), any(), any());
-        verify(brevo, times(1)).trySend(eq("flow20@flow.test"), any(), any(), any());   // UNKNOWN never resent
+        verify(mailbox, times(95)).trySend(any(), any(), any(), any(), any());
+        verify(mailbox, times(1)).trySend(any(), eq("flow20@flow.test"), any(), any(), any());   // UNKNOWN never resent
 
         // a brand-new batch for the same hundred sends nothing at all
         BulkEmailPreviewResponse again = bulk.preview(request(BulkEmailTarget.LEAD, ids, "S", "B"));
@@ -1102,6 +1117,174 @@ class BulkEmailServiceIntegrationTest {
     private String outcome(BulkEmailSendResponse response, Lead lead) {
         return response.getResults().stream()
                 .filter(r -> r.getId().equals(lead.getId())).findFirst().orElseThrow().getOutcome();
+    }
+
+    // ======================================================= sender mailbox (V14.1)
+
+    @Test
+    void withoutAConnectedMailbox_noBatchIsCreated_andNothingIsClaimedOrSent() {
+
+        when(mailbox.requireReady(any())).thenThrow(new com.compact.crm.exception.MailboxUnavailableException(
+                com.compact.crm.exception.MailboxUnavailableException.NOT_CONNECTED, MailboxSender.CONNECT_MESSAGE));
+
+        long before = batchRepository.count();
+
+        assertThatThrownBy(() -> bulk.createBatch(request(BulkEmailTarget.LEAD, List.of(a1.getId()), "S", "B")))
+                .isInstanceOf(com.compact.crm.exception.MailboxUnavailableException.class)
+                .hasMessageContaining("Connect your Gmail or Microsoft 365 mailbox");
+
+        assertThat(batchRepository.count()).isEqualTo(before);
+        assertThat(sendLogRepository.count()).isZero();
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void anExistingBatch_cannotBeSentOnceTheMailboxIsDisconnected_andLeavesNoClaims() {
+
+        String batchId = newBatch(BulkEmailTarget.LEAD, List.of(a1.getId()), "S", "B");
+
+        when(mailbox.requireReady(any())).thenThrow(new com.compact.crm.exception.MailboxUnavailableException(
+                com.compact.crm.exception.MailboxUnavailableException.RECONNECT_REQUIRED, "reconnect"));
+
+        assertThatThrownBy(() -> bulk.send(chunk(batchId, List.of(a1.getId()))))
+                .isInstanceOf(com.compact.crm.exception.MailboxUnavailableException.class);
+
+        assertThat(sendLogRepository.count()).isZero();
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void theBatchPinsItsSenderMailbox_andEveryLogRowRecordsIt() {
+
+        String batchId = newBatch(BulkEmailTarget.LEAD, List.of(a1.getId(), a6.getId()), "S", "B");
+
+        assertThat(batchRepository.findByBatchId(batchId).orElseThrow().getSenderEmail()).isEqualTo("sender@company.test");
+
+        bulk.send(chunk(batchId, List.of(a1.getId(), a6.getId())));
+
+        // sent as THIS employee's mailbox identity - never another one
+        verify(mailbox, times(2)).trySend(eq(SENDER), any(), any(), any(), any());
+
+        assertThat(sendLogRepository.findByBatchIdOrderByIdAsc(batchId))
+                .hasSize(2)
+                .allSatisfy(row -> {
+                    assertThat(row.getSenderEmail()).isEqualTo("sender@company.test");
+                    assertThat(row.getSenderProvider()).isEqualTo(MailboxProvider.GOOGLE);
+                    assertThat(row.getSentByEmployeeId()).isEqualTo(empA.getId());
+                });
+    }
+
+    @Test
+    void aBatchStartedFromOneMailbox_isNeverContinuedFromAnother() {
+
+        String batchId = newBatch(BulkEmailTarget.LEAD, List.of(a1.getId()), "S", "B");
+
+        when(mailbox.requireReady(any())).thenReturn(
+                new SenderIdentity(2L, empA.getId(), MailboxProvider.MICROSOFT, "other@company.test", "Emp A"));
+
+        assertThatThrownBy(() -> bulk.send(chunk(batchId, List.of(a1.getId()))))
+                .isInstanceOf(com.compact.crm.exception.MailboxUnavailableException.class)
+                .hasMessageContaining("sender@company.test");
+
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
+        assertThat(sendLogRepository.count()).isZero();
+    }
+
+    @Test
+    void providerThrottling_stopsTheChunk_keepsRecordedOutcomes_andARetryNeverResendsTheAccepted() {
+
+        when(mailbox.trySend(any(), eq("a1@acme.test"), any(), any(), any())).thenReturn(EmailSendOutcome.accepted());
+        when(mailbox.trySend(any(), eq("a6@acme.test"), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.FAILED, 429, "Gmail HTTP 429",
+                        EmailSendOutcome.Signal.THROTTLED, 30, true))
+                .thenReturn(EmailSendOutcome.accepted());
+
+        List<Long> ids = List.of(a1.getId(), a6.getId(), b1.getId());
+        authenticateAs(admin);
+        String batchId = newBatch(BulkEmailTarget.LEAD, ids, "S", "B");
+
+        assertThatThrownBy(() -> bulk.send(chunk(batchId, ids)))
+                .isInstanceOfSatisfying(com.compact.crm.exception.TooManyRequestsException.class,
+                        e -> assertThat(e.getRetryAfterSeconds()).isEqualTo(30));
+
+        // b1 was never reached: no claim, nothing sent
+        verify(mailbox, never()).trySend(any(), eq("b1@other.test"), any(), any(), any());
+
+        BulkEmailSendResponse view = bulk.results(batchId);
+        assertThat(outcomeOf(view, a1.getId())).isEqualTo("ACCEPTED");
+        assertThat(outcomeOf(view, a6.getId())).isEqualTo("FAILED");
+        assertThat(outcomeOf(view, b1.getId())).isEqualTo("NOT_ATTEMPTED");
+
+        // the browser waits Retry-After, then re-sends the same chunk
+        BulkEmailSendResponse retry = bulk.send(chunk(batchId, ids));
+
+        assertThat(retry.getAccepted()).isEqualTo(3);
+        verify(mailbox, times(1)).trySend(any(), eq("a1@acme.test"), any(), any(), any());
+        verify(mailbox, times(2)).trySend(any(), eq("a6@acme.test"), any(), any(), any());
+        verify(mailbox, times(1)).trySend(any(), eq("b1@other.test"), any(), any(), any());
+    }
+
+    @Test
+    void ourOwnPacing_neverReachesTheProvider_andLeavesTheRecipientSendable() {
+
+        when(mailbox.trySend(any(), eq("a1@acme.test"), any(), any(), any()))
+                .thenReturn(EmailSendOutcome.notSent(EmailSendOutcome.Signal.THROTTLED, "Paused", 20))
+                .thenReturn(EmailSendOutcome.accepted());
+
+        String batchId = newBatch(BulkEmailTarget.LEAD, List.of(a1.getId()), "S", "B");
+
+        assertThatThrownBy(() -> bulk.send(chunk(batchId, List.of(a1.getId()))))
+                .isInstanceOf(com.compact.crm.exception.TooManyRequestsException.class);
+
+        // claim released - nothing recorded as sent or failed
+        assertThat(sendLogRepository.findByBatchIdOrderByIdAsc(batchId)).isEmpty();
+
+        assertThat(bulk.send(chunk(batchId, List.of(a1.getId()))).getAccepted()).isEqualTo(1);
+    }
+
+    @Test
+    void aRevokedMailboxMidChunk_recordsThatRecipientAsFailed_andStopsWithAReconnectError() {
+
+        when(mailbox.trySend(any(), eq("a1@acme.test"), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.FAILED, 401, "Gmail HTTP 401",
+                        EmailSendOutcome.Signal.AUTH_REJECTED, null, true));
+
+        String batchId = newBatch(BulkEmailTarget.LEAD, List.of(a1.getId(), a6.getId()), "S", "B");
+
+        assertThatThrownBy(() -> bulk.send(chunk(batchId, List.of(a1.getId(), a6.getId()))))
+                .isInstanceOfSatisfying(com.compact.crm.exception.MailboxUnavailableException.class,
+                        e -> assertThat(e.getCode()).isEqualTo("MAILBOX_RECONNECT_REQUIRED"));
+
+        assertThat(sendLogRepository.findByBatchIdAndTargetAndTargetId(batchId, BulkEmailTarget.LEAD, a1.getId())
+                .orElseThrow().getStatus()).isEqualTo(com.compact.crm.enums.EmailSendStatus.FAILED);
+        verify(mailbox, never()).trySend(any(), eq("a6@acme.test"), any(), any(), any());
+    }
+
+    @Test
+    void theDailyLimitPerMailbox_isEnforced_beforeAnythingIsSent() {
+
+        authenticateAs(admin);
+
+        // 400 earlier attempts from this mailbox in the last 24 h (the Gmail default cap)
+        for (int i = 0; i < 400; i++) {
+            sendLogRepository.save(com.compact.crm.entity.EmailSendLog.builder()
+                    .batchId("earlier-batch-0001").target(BulkEmailTarget.LEAD).targetId(100_000L + i)
+                    .recipientEmail("x" + i + "@elsewhere.test").status(com.compact.crm.enums.EmailSendStatus.ACCEPTED)
+                    .senderEmail("sender@company.test").senderProvider(MailboxProvider.GOOGLE).build());
+        }
+
+        String batchId = newBatch(BulkEmailTarget.LEAD, List.of(a1.getId()), "S", "B");
+
+        assertThatThrownBy(() -> bulk.send(chunk(batchId, List.of(a1.getId()))))
+                .isInstanceOf(com.compact.crm.exception.TooManyRequestsException.class)
+                .hasMessageContaining("daily limit");
+
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
+        assertThat(sendLogRepository.findByBatchIdOrderByIdAsc(batchId)).isEmpty();
+    }
+
+    private String outcomeOf(BulkEmailSendResponse view, Long id) {
+        return view.getResults().stream().filter(r -> r.getId().equals(id)).findFirst().orElseThrow().getOutcome();
     }
 
     private BulkEmailPreviewResponse.Recipient by(BulkEmailPreviewResponse p, Lead lead) {

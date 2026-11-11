@@ -46,15 +46,24 @@ public interface EmailSendLogRepository extends JpaRepository<EmailSendLog, Long
                                            @Param("batchId") String batchId);
 
     // Tie-break for two requests (other batches, or other records of the same
-    // batch) claiming the same address at the same instant: the claim with the
-    // lowest id wins, any later one backs off.
+    // batch) claiming the same address at the same instant. Called under
+    // BulkEmailService's per-address lock, so the claim that got there first is
+    // always visible here: any OTHER active claim means this one backs off.
     @Query("select count(l) from EmailSendLog l "
-            + "where l.recipientEmail = :email and l.id < :id "
+            + "where l.recipientEmail = :email and l.id <> :id "
             + "and l.status in :statuses and l.updatedAt >= :since")
-    long countEarlierActiveClaims(@Param("email") String email,
-                                  @Param("id") Long id,
-                                  @Param("statuses") Collection<EmailSendStatus> statuses,
-                                  @Param("since") LocalDateTime since);
+    long countOtherActiveClaims(@Param("email") String email,
+                                @Param("id") Long id,
+                                @Param("statuses") Collection<EmailSendStatus> statuses,
+                                @Param("since") LocalDateTime since);
+
+    // Per-mailbox daily cap: attempts from this sender mailbox that went (or may
+    // have gone) out since :since.
+    @Query("select count(l) from EmailSendLog l "
+            + "where l.senderEmail = :sender and l.status in :statuses and l.updatedAt >= :since")
+    long countSenderActiveSince(@Param("sender") String senderEmail,
+                                @Param("statuses") Collection<EmailSendStatus> statuses,
+                                @Param("since") LocalDateTime since);
 
     // Atomic compare-and-set so two concurrent submissions cannot both win
     // the right to (re)send the same recipient. Returns 1 only for the winner.

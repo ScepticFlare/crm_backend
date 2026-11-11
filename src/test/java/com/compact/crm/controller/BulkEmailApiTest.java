@@ -1,5 +1,10 @@
 package com.compact.crm.controller;
 
+import com.compact.crm.enums.MailboxProvider;
+import com.compact.crm.service.mail.EmailSendOutcome;
+import com.compact.crm.service.mail.MailboxSender;
+import com.compact.crm.service.mail.SenderIdentity;
+
 import com.compact.crm.entity.Employee;
 import com.compact.crm.entity.Lead;
 import com.compact.crm.entity.Permission;
@@ -14,7 +19,6 @@ import com.compact.crm.repository.RolePermissionRepository;
 import com.compact.crm.repository.RoleRepository;
 import com.compact.crm.security.JwtService;
 import com.compact.crm.security.UserPrincipal;
-import com.compact.crm.service.BrevoEmailClient;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -46,7 +50,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Transactional
 class BulkEmailApiTest {
 
-    @MockitoBean private BrevoEmailClient brevo;
+    @MockitoBean private MailboxSender mailbox;
+
+    // Every send goes out from the signed-in employee's own connected mailbox;
+    // here a fixed, connected Gmail mailbox (the provider itself is mocked).
+    static final SenderIdentity SENDER =
+            new SenderIdentity(1L, 1L, MailboxProvider.GOOGLE, "sender@company.test", "Sender");
+
+    @org.junit.jupiter.api.BeforeEach
+    void connectedMailbox() {
+        org.mockito.Mockito.lenient().when(mailbox.requireReady(org.mockito.ArgumentMatchers.any())).thenReturn(SENDER);
+    }
 
     @Autowired private MockMvc mockMvc;
     @Autowired private JwtService jwtService;
@@ -85,8 +99,8 @@ class BulkEmailApiTest {
         mine = lead("Mine Co", "Mina", "mina@mine.test", owner);
         theirs = lead("Theirs Co", "Theo", "theo@theirs.test", other);
 
-        when(brevo.trySend(any(), any(), any(), any()))
-                .thenReturn(new BrevoEmailClient.SendOutcome(BrevoEmailClient.Result.ACCEPTED, null, null));
+        when(mailbox.trySend(any(), any(), any(), any(), any()))
+                .thenReturn(new EmailSendOutcome(EmailSendOutcome.Result.ACCEPTED, null, null));
     }
 
     @Test
@@ -104,7 +118,7 @@ class BulkEmailApiTest {
         mockMvc.perform(delete("/api/email-suppressions/1").param("justification", "because I say so"))
                 .andExpect(status().isUnauthorized());
 
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -176,7 +190,7 @@ class BulkEmailApiTest {
                         .content(sendBody(mine.getId(), "00000000-0000-0000-0000-000000000000")))
                 .andExpect(status().isForbidden());
 
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -212,7 +226,7 @@ class BulkEmailApiTest {
                         .content(sendBody(mine.getId(), "00000000-0000-0000-0000-000000000000")))
                 .andExpect(status().isNotFound());
 
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -256,7 +270,7 @@ class BulkEmailApiTest {
                                 + "],\"subject\":\"Different\",\"body\":\"Hello {{contactPerson}}\"}"))
                 .andExpect(status().isBadRequest());
 
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
 
         mockMvc.perform(post("/api/bulk-email/send").header("Authorization", auth)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -283,7 +297,7 @@ class BulkEmailApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.results[0].alreadyProcessed").value(true));
 
-        verify(brevo, org.mockito.Mockito.times(1)).trySend(any(), any(), any(), any());
+        verify(mailbox, org.mockito.Mockito.times(1)).trySend(any(), any(), any(), any(), any());
 
         // another user cannot read or use this batch
         mockMvc.perform(get("/api/bulk-email/batches/" + batchId).header("Authorization", bearer(other)))
@@ -351,7 +365,7 @@ class BulkEmailApiTest {
                 .andExpect(jsonPath("$.accepted").value(0))
                 .andExpect(jsonPath("$.results[0].exclusionCode").value("SUPPRESSED"));
 
-        verify(brevo, never()).trySend(any(), any(), any(), any());
+        verify(mailbox, never()).trySend(any(), any(), any(), any(), any());
 
         // removal: an employee cannot; the admin needs a justification; both are audited
         mockMvc.perform(delete("/api/email-suppressions/" + id).header("Authorization", ownerAuth)

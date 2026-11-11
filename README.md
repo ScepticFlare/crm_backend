@@ -200,11 +200,9 @@ Supabase Storage is used for file storage associated with CRM functionality.
 
 The backend handles the relevant storage operations required by the application.
 
-### Brevo
+### Email from each employee's own mailbox (Gmail API / Microsoft Graph)
 
-Email functionality is integrated through the Brevo HTTP API.
-
-The backend communicates with Brevo through authenticated REST requests for email delivery.
+Every CRM email (Send Email, Keep in Touch, Bulk Email) is sent from the signed-in employee's own connected mailbox: Gmail / Google Workspace through the Gmail API (`gmail.send` scope) or Outlook / Microsoft 365 through Microsoft Graph (delegated `Mail.Send`). Each employee connects their mailbox once under **Email Account**; refresh tokens are stored AES-GCM encrypted (`EMAIL_TOKEN_ENCRYPTION_KEY`) and never reach the frontend. There is no shared sender and no fallback to another mailbox. This replaced the earlier shared Brevo account. Google / Microsoft setup, Render variables, limits and the deployment / rollback procedure: [docs/email-provider-migration.md](docs/email-provider-migration.md).
 
 ## REST API
 
@@ -267,7 +265,7 @@ src/
 ### Integrations
 
 - Supabase Storage
-- Brevo API
+- Gmail API and Microsoft Graph (employee mailboxes)
 
 ### Deployment
 
@@ -294,7 +292,7 @@ mvn clean install
 mvn spring-boot:run
 ```
 
-The application requires environment-specific configuration for PostgreSQL, JWT, Supabase, Brevo, and other required services.
+The application requires environment-specific configuration for PostgreSQL, JWT, Supabase, the Google / Microsoft OAuth clients for email, and other required services.
 
 Sensitive credentials should be supplied through environment variables and should not be committed to the repository.
 
