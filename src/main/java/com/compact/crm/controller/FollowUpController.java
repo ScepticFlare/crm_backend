@@ -3,9 +3,11 @@ package com.compact.crm.controller;
 import com.compact.crm.dto.request.BulkIdsRequest;
 import com.compact.crm.dto.request.FollowUpRequest;
 import com.compact.crm.dto.response.BulkOperationResult;
+import com.compact.crm.dto.response.FollowUpTargetResponse;
 import com.compact.crm.dto.search.FollowUpSearchCriteria;
 import com.compact.crm.entity.FollowUp;
 import com.compact.crm.service.FollowUpService;
+import com.compact.crm.service.FollowUpTargetService;
 import com.compact.crm.util.TableExport;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +24,19 @@ import java.util.List;
 public class FollowUpController {
 
     private final FollowUpService followUpService;
+    private final FollowUpTargetService followUpTargetService;
+
+    // The leads / opportunities the caller may schedule a follow-up for, with
+    // company, contact, stage and owner so same-named records can be told apart.
+    // `type`: LEAD, OPPORTUNITY or blank (both). See FollowUpTargetService.
+    @GetMapping("/targets")
+    public List<FollowUpTargetResponse> getFollowUpTargets(
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) String type,
+            @RequestParam(required = false) Integer limit
+    ) {
+        return followUpTargetService.search(search, type, limit);
+    }
 
     @PostMapping
     public FollowUp createFollowUp(@RequestBody FollowUpRequest request) {
@@ -92,8 +107,18 @@ public class FollowUpController {
                 criteria, parseIds(ids), parseIds(excludeIds), sortBy, sortDir);
 
         List<TableExport.Column<FollowUp>> columns = List.of(
-                TableExport.Column.text("Lead", f -> f.getLead() != null ? f.getLead().getCompanyName() : null),
-                TableExport.Column.text("Opportunity", f -> f.getOpportunity() != null ? f.getOpportunity().getTitle() : null),
+                // Company / lead through the follow-up's own lead or its
+                // opportunity's lead (an opportunity follow-up has no lead_id).
+                TableExport.Column.text("Company", f -> f.getRelated().companyName()),
+                TableExport.Column.text("Contact", f -> f.getRelated().contactPerson()),
+                TableExport.Column.text("Linked To", f -> switch (f.getRelated().kind()) {
+                    case "LEAD" -> "Lead";
+                    case "OPPORTUNITY" -> "Opportunity";
+                    case "LEAD_AND_OPPORTUNITY" -> "Lead and opportunity";
+                    default -> "None";
+                }),
+                TableExport.Column.text("Opportunity", f -> f.getRelated().opportunityTitle()),
+                TableExport.Column.text("Stage", f -> f.getRelated().opportunityStage()),
                 TableExport.Column.text("Employee", f -> f.getEmployee() != null ? f.getEmployee().getName() : null),
                 TableExport.Column.text("Activity Type", f -> f.getActivityType() != null ? f.getActivityType().getName() : null),
                 TableExport.Column.text("Status", f -> f.getStatus() != null ? f.getStatus().name() : null),

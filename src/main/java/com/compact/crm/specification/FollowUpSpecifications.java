@@ -44,7 +44,10 @@ public final class FollowUpSpecifications {
                     cb.like(cb.lower(root.get("activityType").get("name")), like),
                     cb.like(cb.lower(root.get("employee").get("name")), like),
                     cb.like(cb.lower(cb.coalesce(leadJoin.get("companyName"), "")), like),
-                    cb.like(cb.lower(cb.coalesce(oppLeadJoin.get("companyName"), "")), like)
+                    cb.like(cb.lower(cb.coalesce(oppLeadJoin.get("companyName"), "")), like),
+                    cb.like(cb.lower(cb.coalesce(oppJoin.get("title"), "")), like),
+                    cb.like(cb.lower(cb.coalesce(leadJoin.get("contactPerson"), "")), like),
+                    cb.like(cb.lower(cb.coalesce(oppLeadJoin.get("contactPerson"), "")), like)
             );
         };
     }

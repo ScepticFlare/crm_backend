@@ -69,13 +69,29 @@ public class FollowUpService {
     // (Lead or Opportunity) it belongs to, matching how the FollowUps list
     // UI already identifies a row.
     private String followUpEntityName(FollowUp followUp) {
-        if (followUp.getLead() != null) {
-            return followUp.getLead().getCompanyName();
+        return followUp.getRelated().label();
+    }
+
+    // The employee who owns a follow-up's record: its lead's assigned employee,
+    // or (an opportunity follow-up has no lead_id) its opportunity's lead's.
+    // Null when no owner can be resolved - e.g. a historical row whose links
+    // are missing. AccessControlService.assertCanAccess then allows only an
+    // ALL-scope role, so a broken link can never widen access, and it is never
+    // a NullPointerException (500) either.
+    private static Long ownerIdOf(Lead lead, Opportunity opportunity) {
+        Lead owning = lead != null ? lead : opportunity != null ? opportunity.getLead() : null;
+        return owning != null && owning.getAssignedEmployee() != null ? owning.getAssignedEmployee().getId() : null;
+    }
+
+    // A follow-up may name a lead, an opportunity, or both - but both must be
+    // the SAME record (the opportunity converted from that lead). Otherwise one
+    // follow-up would point at two unrelated companies.
+    private static void requireConsistentParents(Lead lead, Opportunity opportunity) {
+        if (lead != null && opportunity != null
+                && (opportunity.getLead() == null || !opportunity.getLead().getId().equals(lead.getId()))) {
+            throw new IllegalArgumentException(
+                    "The selected lead and opportunity are different records. Choose one of them.");
         }
-        if (followUp.getOpportunity() != null) {
-            return followUp.getOpportunity().getTitle();
-        }
-        return null;
     }
 
     // A deactivated activity type is no longer offered for new follow-ups, so
@@ -111,8 +127,7 @@ public class FollowUpService {
     public FollowUp createFollowUp(FollowUpRequest request) {
 
         if (request.getLeadId() == null && request.getOpportunityId() == null) {
-            throw new ResourceNotFoundException(
-                    "FollowUp must belong to either a Lead or an Opportunity");
+            throw new ResourceNotFoundException(NO_PARENT_MESSAGE);
         }
 
         Lead lead = null;
@@ -130,11 +145,10 @@ public class FollowUpService {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
 
-        Employee parentOwner = lead != null
-                ? lead.getAssignedEmployee()
-                : opportunity.getLead().getAssignedEmployee();
+        assertCanManageParents(currentEmployee, lead, opportunity);
 
-        accessControlService.assertCanAccess(currentEmployee, FOLLOWUP_MANAGE, parentOwner.getId());
+        // after authorization, so nothing is revealed about records out of scope
+        requireConsistentParents(lead, opportunity);
 
         Employee employee = employeeRepository.findById(request.getEmployeeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found"));
@@ -243,13 +257,10 @@ public class FollowUpService {
 
             FollowUp followUp = followUpOpt.get();
 
-            Employee owner = followUp.getLead() != null
-                    ? followUp.getLead().getAssignedEmployee()
-                    : followUp.getOpportunity().getLead().getAssignedEmployee();
-
             try {
 
-                accessControlService.assertCanAccess(currentEmployee, FOLLOWUP_DELETE, owner.getId());
+                accessControlService.assertCanAccess(currentEmployee, FOLLOWUP_DELETE,
+                        ownerIdOf(followUp.getLead(), followUp.getOpportunity()));
                 followUpRepository.delete(followUp);
                 succeeded.add(id);
 
@@ -293,6 +304,8 @@ public class FollowUpService {
 
         FollowUp followUp = getAuthorizedFollowUp(id, FOLLOWUP_VIEW);
 
+        decorateForEdit(followUp);
+
         activityLogService.log(
                 currentUserService.getCurrentEmployee(),
                 ActivityModule.FOLLOWUP, ActivityAction.VIEW,
@@ -316,6 +329,10 @@ public class FollowUpService {
         // the only way to log FOLLOWUP.COMPLETE distinctly from UPDATE.
         FollowUpStatus previousStatus = followUp.getStatus();
 
+        if (request.getLeadId() == null && request.getOpportunityId() == null) {
+            throw new IllegalArgumentException(NO_PARENT_MESSAGE);
+        }
+
         Lead lead = null;
         Opportunity opportunity = null;
 
@@ -329,15 +346,9 @@ public class FollowUpService {
                     .orElseThrow(() -> new ResourceNotFoundException("Opportunity not found"));
         }
 
-        Employee newParentOwner = lead != null
-                ? lead.getAssignedEmployee()
-                : opportunity.getLead().getAssignedEmployee();
+        assertCanManageParents(currentUserService.getCurrentEmployee(), lead, opportunity);
 
-        accessControlService.assertCanAccess(
-                currentUserService.getCurrentEmployee(),
-                FOLLOWUP_MANAGE,
-                newParentOwner.getId()
-        );
+        requireConsistentParents(lead, opportunity);
 
         Employee employee = employeeRepository.findById(request.getEmployeeId())
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found"));
@@ -459,6 +470,11 @@ public class FollowUpService {
     // A qualifying follow-up (FollowUpRules: pending, future, described) on
     // the opportunity or its originating lead, other than `excludeId`.
     private boolean hasOtherQualifyingFollowUp(Opportunity opportunity, Long excludeId) {
+        return earliestOtherQualifyingDate(opportunity, excludeId).isPresent();
+    }
+
+    // Scheduled date of the earliest such follow-up (same candidates as above).
+    private Optional<LocalDateTime> earliestOtherQualifyingDate(Opportunity opportunity, Long excludeId) {
 
         LocalDateTime now = com.compact.crm.util.BusinessClock.now();
 
@@ -469,7 +485,54 @@ public class FollowUpService {
         }
 
         return candidates.stream()
-                .anyMatch(f -> !f.getId().equals(excludeId) && FollowUpRules.qualifies(f, now));
+                .filter(f -> !f.getId().equals(excludeId) && FollowUpRules.qualifies(f, now))
+                .map(FollowUp::getScheduledDate)
+                .min(java.util.Comparator.naturalOrder());
+    }
+
+    // Fills the read-only fields the edit form needs, for the single
+    // follow-up response only: whether its lead has been converted (so the
+    // form can label a lead that is no longer in the active Leads list), and
+    // what completing it will require - decided by the same target
+    // opportunity and the same qualifying rule updateFollowUp enforces, so the
+    // form never under- or over-asks. Nothing is written.
+    private void decorateForEdit(FollowUp followUp) {
+
+        Lead lead = followUp.getLead();
+
+        Opportunity convertedInto = lead == null ? null
+                : opportunityRepository.findByLeadId(lead.getId()).orElse(null);
+
+        if (lead != null) {
+            lead.setConverted(convertedInto != null);
+        }
+
+        Opportunity target = followUp.getOpportunity() != null ? followUp.getOpportunity() : convertedInto;
+
+        boolean needsNext = target != null && OpportunityWorkflow.requiresNextFollowUp(target);
+
+        followUp.setNextFollowUpNeededOnCompletion(needsNext);
+        followUp.setOtherNextFollowUpDate(
+                needsNext ? earliestOtherQualifyingDate(target, followUp.getId()).orElse(null) : null);
+    }
+
+    static final String NO_PARENT_MESSAGE = "FollowUp must belong to either a Lead or an Opportunity";
+
+    // A follow-up may name a Lead, an Opportunity, or (historically) both.
+    // The caller must be allowed to manage follow-ups of EVERY record it
+    // names - checking only one would let a request attach a follow-up to an
+    // out-of-scope record by also naming one the caller owns. A record's
+    // owner is its Lead's assigned employee (an Opportunity's via its Lead),
+    // the same resolution getAuthorizedFollowUp and the list scope use.
+    private void assertCanManageParents(Employee actor, Lead lead, Opportunity opportunity) {
+
+        if (lead != null) {
+            accessControlService.assertCanAccess(actor, FOLLOWUP_MANAGE, ownerIdOf(lead, null));
+        }
+
+        if (opportunity != null) {
+            accessControlService.assertCanAccess(actor, FOLLOWUP_MANAGE, ownerIdOf(null, opportunity));
+        }
     }
 
     public List<FollowUp> getFollowUpsByLead(Long leadId) {
@@ -482,7 +545,7 @@ public class FollowUpService {
         accessControlService.assertCanAccess(
                 currentEmployee,
                 FOLLOWUP_VIEW,
-                lead.getAssignedEmployee().getId()
+                ownerIdOf(lead, null)
         );
 
         return followUpRepository.findByLeadId(leadId);
@@ -498,7 +561,7 @@ public class FollowUpService {
         accessControlService.assertCanAccess(
                 currentEmployee,
                 FOLLOWUP_VIEW,
-                opportunity.getLead().getAssignedEmployee().getId()
+                ownerIdOf(null, opportunity)
         );
 
         return followUpRepository.findByOpportunityId(opportunityId);
@@ -525,17 +588,8 @@ public class FollowUpService {
 
         Employee currentEmployee = currentUserService.getCurrentEmployee();
 
-        Employee owner;
-
-        if (followUp.getLead() != null) {
-            owner = followUp.getLead().getAssignedEmployee();
-        } else {
-            owner = followUp.getOpportunity()
-                    .getLead()
-                    .getAssignedEmployee();
-        }
-
-        accessControlService.assertCanAccess(currentEmployee, permissionCode, owner.getId());
+        accessControlService.assertCanAccess(currentEmployee, permissionCode,
+                ownerIdOf(followUp.getLead(), followUp.getOpportunity()));
 
         return followUp;
     }
