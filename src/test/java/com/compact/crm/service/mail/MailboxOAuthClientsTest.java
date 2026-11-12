@@ -362,6 +362,39 @@ class MailboxOAuthClientsTest {
         assertThat(who.email()).isEqualTo("asha@outlook.test");
     }
 
+    // One Microsoft 365 tenant can hold several verified domains (e.g. a .com and
+    // a .in). Nothing is domain-specific: the single-tenant check is on the
+    // tenant id, and each account is identified by its own Graph mailbox address.
+    @Test
+    void microsoft_accountsOnDifferentDomainsOfTheSameTenant_areBothAccepted_eachWithItsOwnAddress() {
+
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        MicrosoftOAuthClient ms = new MicrosoftOAuthClient(builder, MailTestSupport.properties(TENANT, true));
+
+        String inOid = "aaaaaaaa-0000-0000-0000-000000000001";
+        String comOid = "aaaaaaaa-0000-0000-0000-000000000002";
+
+        server.expect(requestTo(MicrosoftOAuthClient.GRAPH_ME))
+                .andRespond(withSuccess("{\"id\":\"" + inOid + "\",\"mail\":\"Priya@CompactUPS.in\","
+                        + "\"userPrincipalName\":\"priya@compactups.in\",\"displayName\":\"Priya\"}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(MicrosoftOAuthClient.GRAPH_ME))
+                .andRespond(withSuccess("{\"id\":\"" + comOid + "\",\"mail\":\"rahul@compactups.com\","
+                        + "\"userPrincipalName\":\"rahul@compactups.com\",\"displayName\":\"Rahul\"}", MediaType.APPLICATION_JSON));
+
+        MailboxOAuthClient.MailboxIdentity in = ms.identify(new OAuthTokens("at-in", "rt", 3600, "Mail.Send",
+                MailTestSupport.idToken(MailTestSupport.microsoftClaims(inOid, TENANT, "n-in"))), "n-in");
+        MailboxOAuthClient.MailboxIdentity com = ms.identify(new OAuthTokens("at-com", "rt", 3600, "Mail.Send",
+                MailTestSupport.idToken(MailTestSupport.microsoftClaims(comOid, TENANT, "n-com"))), "n-com");
+
+        assertThat(in.email()).isEqualTo("priya@compactups.in");
+        assertThat(in.subject()).isEqualTo(inOid);
+        assertThat(com.email()).isEqualTo("rahul@compactups.com");
+        assertThat(com.subject()).isEqualTo(comOid);
+        assertThat(in.tenantId()).isEqualTo(TENANT).isEqualTo(com.tenantId());
+        server.verify();
+    }
+
     private static OAuthTokens tokensWith(Map<String, Object> claims) {
         return new OAuthTokens("at", "rt", 3600, "openid", MailTestSupport.idToken(claims));
     }

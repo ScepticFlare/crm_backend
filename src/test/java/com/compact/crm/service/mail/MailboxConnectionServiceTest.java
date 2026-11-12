@@ -378,6 +378,63 @@ class MailboxConnectionServiceTest {
                 .contains(ActivityAction.MAILBOX_DISCONNECTED);
     }
 
+    // Arvind: some employees are @compactups.in, others @compactups.com, in one
+    // Microsoft 365 tenant. Both connect through the same Microsoft flow; the
+    // mailbox must still be exactly the employee's own CRM address.
+    @Test
+    void microsoftMailboxes_onEitherCompanyDomain_connect_butOnlyToTheEmployeeWithThatExactAddress() {
+
+        Role sales = asha.getRole();
+        Employee priya = employeeRepository.save(Employee.builder().name("Priya").email("priya@compactups.in")
+                .phone("9700000011").password("x").role(sales).isActive(true).build());
+        Employee rahul = employeeRepository.save(Employee.builder().name("Rahul").email("rahul@compactups.com")
+                .phone("9700000012").password("x").role(sales).isActive(true).build());
+        Employee karan = employeeRepository.save(Employee.builder().name("Karan").email("karan@compactups.in")
+                .phone("9700000013").password("x").role(sales).isActive(true).build());
+
+        FakeGoogle microsoft = new FakeGoogle();
+        microsoft.provider = MailboxProvider.MICROSOFT;
+        MailboxProperties properties = MailTestSupport.properties();
+        MailboxSender sender = new MailboxSender(accountRepository, cipher, properties, new MailboxRateLimiter(),
+                List.of(), List.of(microsoft));
+        service = new MailboxConnectionService(accountRepository, stateRepository, employeeRepository,
+                currentUserService, accessControlService, activityLogService, cipher, properties, sender, List.of(microsoft));
+
+        // .in employee, .in mailbox
+        login(priya);
+        service.startConnection("microsoft");
+        assertThat(microsoft.lastLoginHint).isEqualTo("priya@compactups.in");
+        microsoft.email = "priya@compactups.in";
+        microsoft.subject = "oid-priya";
+        assertThat(params(service.handleCallback("microsoft", "code", microsoft.lastState, null)))
+                .containsEntry("result", "connected").containsEntry("provider", "microsoft");
+
+        // .com employee, .com mailbox
+        login(rahul);
+        service.startConnection("microsoft");
+        microsoft.email = "rahul@compactups.com";
+        microsoft.subject = "oid-rahul";
+        assertThat(params(service.handleCallback("microsoft", "code", microsoft.lastState, null)))
+                .containsEntry("result", "connected");
+
+        // a same-name mailbox on the OTHER domain is a different mailbox: refused
+        login(karan);
+        service.startConnection("microsoft");
+        microsoft.email = "karan@compactups.com";
+        microsoft.subject = "oid-karan-com";
+        assertThat(params(service.handleCallback("microsoft", "code", microsoft.lastState, null)))
+                .containsEntry("reason", "email_mismatch");
+
+        assertThat(accountRepository.findByEmployeeId(priya.getId()).orElseThrow())
+                .satisfies(a -> {
+                    assertThat(a.getProvider()).isEqualTo(MailboxProvider.MICROSOFT);
+                    assertThat(a.getEmailAddress()).isEqualTo("priya@compactups.in");
+                });
+        assertThat(accountRepository.findByEmployeeId(rahul.getId()).orElseThrow().getEmailAddress())
+                .isEqualTo("rahul@compactups.com");
+        assertThat(accountRepository.findByEmployeeId(karan.getId())).isEmpty();
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private void login(Employee e) {
@@ -400,7 +457,9 @@ class MailboxConnectionServiceTest {
         int exchanges;
         final List<String> revoked = new ArrayList<>();
 
-        @Override public MailboxProvider provider() { return MailboxProvider.GOOGLE; }
+        MailboxProvider provider = MailboxProvider.GOOGLE;
+
+        @Override public MailboxProvider provider() { return provider; }
 
         @Override
         public String authorizationUrl(String state, String challenge, String nonce, String hint) {
