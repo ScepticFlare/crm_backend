@@ -9,5 +9,7 @@ public enum ActivityModule {
     OPPORTUNITY,
     CUSTOMER,
     FOLLOWUP,
-    EMPLOYEE
+    EMPLOYEE,
+    // CRM-wide administration not tied to one record (database backups).
+    SYSTEM
 }

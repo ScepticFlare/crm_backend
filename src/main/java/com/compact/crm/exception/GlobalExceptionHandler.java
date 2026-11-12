@@ -189,6 +189,20 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(error, HttpStatus.CONFLICT);
     }
 
+    // A backup is already running, or the requested backup cannot be downloaded.
+    @ExceptionHandler(BackupConflictException.class)
+    public ResponseEntity<ApiError> handleBackupConflict(BackupConflictException ex) {
+
+        ApiError error = new ApiError(
+                LocalDateTime.now().toString(),
+                HttpStatus.CONFLICT.value(),
+                ex.getCode(),
+                ex.getMessage()
+        );
+
+        return new ResponseEntity<>(error, HttpStatus.CONFLICT);
+    }
+
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ApiError> handleAccessDeniedException(AccessDeniedException ex) {
 

@@ -51,5 +51,13 @@ public enum ActivityAction {
     // Microsoft 365) - logged against ActivityModule.EMPLOYEE, see
     // service.mail.MailboxConnectionService.
     MAILBOX_CONNECTED,
-    MAILBOX_DISCONNECTED
+    MAILBOX_DISCONNECTED,
+
+    // Database backups ("Take Backup", ADMIN only) - logged against
+    // ActivityModule.SYSTEM, see service.backup.BackupService. Who started a
+    // backup, how it ended, and every download of a backup file.
+    BACKUP_STARTED,
+    BACKUP_SUCCEEDED,
+    BACKUP_FAILED,
+    BACKUP_DOWNLOADED
 }
