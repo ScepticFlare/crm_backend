@@ -190,7 +190,10 @@ public class LeadController {
     // those rows (bulk "export selected") - still AND-ed with the RBAC scope
     // and the category, so it can never surface a record outside the
     // caller's visibility even if an out-of-scope id is included.
-    @GetMapping("/export")
+    // GET, or POST with the same parameters as a form body - used for a
+    // large selection whose `ids` would not fit in a URL. Same scope,
+    // permission and filters either way.
+    @RequestMapping(value = "/export", method = {RequestMethod.GET, RequestMethod.POST})
     public ResponseEntity<byte[]> exportLeads(
             @ModelAttribute LeadSearchCriteria criteria,
             @RequestParam(required = false) String sortBy,

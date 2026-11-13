@@ -204,6 +204,10 @@ The backend handles the relevant storage operations required by the application.
 
 Every CRM email (Send Email, Keep in Touch, Bulk Email) is sent from the signed-in employee's own connected mailbox: Gmail / Google Workspace through the Gmail API (`gmail.send` scope) or Outlook / Microsoft 365 through Microsoft Graph (delegated `Mail.Send`). Each employee connects their mailbox once under **Email Account**; refresh tokens are stored AES-GCM encrypted (`EMAIL_TOKEN_ENCRYPTION_KEY`) and never reach the frontend. There is no shared sender and no fallback to another mailbox. This replaced the earlier shared Brevo account. Google / Microsoft setup, Render variables, limits and the deployment / rollback procedure: [docs/email-provider-migration.md](docs/email-provider-migration.md).
 
+### WhatsApp (WAHA) - optional
+
+Bulk WhatsApp sends admin-made message templates to opted-in Leads / Opportunities through a separately deployed, self-hosted WAHA (WhatsApp HTTP API) instance. It is disabled until `WAHA_BASE_URL` and `WAHA_API_KEY` are set (the CRM starts normally without them; `WHATSAPP_ENABLED=false` turns it off). WAHA is not the official WhatsApp Business Platform - read the caveats, deployment, consent and staging procedure in [docs/BULK_WHATSAPP.md](docs/BULK_WHATSAPP.md) before connecting a number.
+
 ## REST API
 
 The backend exposes REST APIs for the major CRM modules, including:

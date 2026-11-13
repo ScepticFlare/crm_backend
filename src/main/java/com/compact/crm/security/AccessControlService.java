@@ -78,6 +78,12 @@ public class AccessControlService {
     // The do-not-email list (V13). ADMIN only, like EMAIL_TEMPLATE_MANAGE.
     public static final String EMAIL_SUPPRESSION_MANAGE = "EMAIL_SUPPRESSION_MANAGE";
     public static final String DOCUMENT_MANAGE = "DOCUMENT_MANAGE";
+    // Bulk WhatsApp (V15). WHATSAPP_SEND is scoped like EMAIL_SEND
+    // (ADMIN ALL / MANAGER TEAM / EMPLOYEE OWN); template management and
+    // consent administration (bulk import, overriding an opt-out) are ADMIN only.
+    public static final String WHATSAPP_SEND = "WHATSAPP_SEND";
+    public static final String WHATSAPP_TEMPLATE_MANAGE = "WHATSAPP_TEMPLATE_MANAGE";
+    public static final String WHATSAPP_CONSENT_MANAGE = "WHATSAPP_CONSENT_MANAGE";
 
     private static final String NOT_AUTHORIZED = "You are not authorized to access this record.";
     private static final String NO_PERMISSION = "You do not have permission to perform this action.";

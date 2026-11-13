@@ -141,7 +141,10 @@ public class CustomerController {
     // `columns`: comma-separated keys of EXPORT_COLUMNS, in order. `ids`:
     // exactly those rows; otherwise every matching row minus `excludeIds`.
     // Always within the caller's scope and the active filters.
-    @GetMapping("/export")
+    // GET, or POST with the same parameters as a form body - used for a
+    // large selection whose `ids` would not fit in a URL. Same scope,
+    // permission and filters either way.
+    @RequestMapping(value = "/export", method = {RequestMethod.GET, RequestMethod.POST})
     public ResponseEntity<byte[]> exportCustomers(
             @ModelAttribute CustomerSearchCriteria criteria,
             @RequestParam(required = false) String sortBy,

@@ -20,41 +20,20 @@ public class SalesStageService {
 
     private final SalesStageRepository repository;
 
+    // Custom stages are withdrawn: the workflow has exactly five main stages
+    // (SalesStageType.isMainStage), created and kept by ensureCoreStages.
+    // Refused here (not just hidden in the UI) so no API call can add one.
+    // Existing custom stages are retired at startup
+    // (LegacyStageRetirement): their Opportunities are moved into the main
+    // stages and the rows are kept, inactive, for history.
+    static final String CUSTOM_STAGES_WITHDRAWN_MESSAGE =
+            "New sales stages cannot be added. Opportunities use the five main stages "
+                    + "(In Progress, Won, Lost, Postponed, Dropped).";
+
     public SalesStage create(SalesStageRequest request) {
-
-        String stageName = request.getName().trim();
-
-        if (stageName.isEmpty()) {
-            throw new IllegalArgumentException("Sales stage name is required");
-        }
-
-        repository.findByNameIgnoreCase(stageName)
-                .ifPresent(stage -> {
-                    throw new IllegalArgumentException("Sales stage already exists");
-                });
-
-        SalesStage salesStage = SalesStage.builder()
-                .name(stageName)
-                .build();
-
-        return repository.save(salesStage);
+        throw new IllegalArgumentException(CUSTOM_STAGES_WITHDRAWN_MESSAGE);
     }
 
-    /**
-     * Returns an existing Sales Stage if found.
-     * Otherwise creates a new one automatically.
-     */
-    public SalesStage findOrCreate(String name) {
-
-        String stageName = name.trim();
-
-        return repository.findByNameIgnoreCase(stageName)
-                .orElseGet(() -> repository.save(
-                        SalesStage.builder()
-                                .name(stageName)
-                                .build()
-                ));
-    }
     public SalesStage getByName(String name) {
 
         return repository.findByNameIgnoreCase(name.trim())
@@ -78,8 +57,16 @@ public class SalesStageService {
         return matches.get(0);
     }
 
+    // The stages that may be chosen for an Opportunity: the active main
+    // stages only, in workflow order. Custom, retired (NEW) and historical
+    // stages are never offered - an Opportunity already in one still shows it
+    // (it is part of the Opportunity itself), and getAllIncludingInactive
+    // lists every row for Admins and reports.
     public List<SalesStage> getAll() {
-        return repository.findByIsActiveTrue();
+        return repository.findByIsActiveTrue().stream()
+                .filter(OpportunityWorkflow::isMainStage)
+                .sorted(java.util.Comparator.comparing(s -> s.getStageType().ordinal()))
+                .toList();
     }
 
     public List<SalesStage> getAllIncludingInactive() {
@@ -142,6 +129,14 @@ public class SalesStageService {
 
         SalesStage salesStage = getById(id);
 
+        // Only the five main stages are ever active. A retired stage (NEW,
+        // UNRESPONSIVE, INVALID, the old QUOTATION SENT / NEGOTIATION stages)
+        // or a custom stage stays withdrawn from the workflow for good.
+        if (!OpportunityWorkflow.isMainStage(salesStage)) {
+            throw new IllegalArgumentException(
+                    "\"" + salesStage.getName() + "\" has been retired and cannot be reactivated.");
+        }
+
         salesStage.setIsActive(true);
 
         repository.save(salesStage);
@@ -155,14 +150,34 @@ public class SalesStageService {
     //  - exactly one untyped stage whose name equals the type's default name
     //    (case/whitespace-insensitive) is tagged with it;
     //  - none -> a seeded type's stage is created (the QUOTATION SENT / NEGOTIATION legacy types are not);
-    //  - several -> ambiguous: nothing is tagged or created, and an error is
-    //    logged so an Admin can resolve it (never a silent guess).
+    //  - several -> for one of the five main stages (mandatory, so it must
+    //    exist): the oldest row (lowest id) is tagged and a warning logged.
+    //    They all carry the same name, so this is not a guess about meaning;
+    //    LegacyStageRetirement then merges the others' Opportunities into it
+    //    (with history) and keeps their rows inactive. For any other type,
+    //    nothing is tagged (the retirements recognise those rows by name).
     // Renamed stages are found by their type, so they are never re-created.
     public void ensureCoreStages() {
 
         for (SalesStageType type : SalesStageType.values()) {
 
-            if (!repository.findByStageType(type).isEmpty()) {
+            List<SalesStage> typed = repository.findByStageType(type);
+
+            if (!typed.isEmpty()) {
+
+                // The five main stages are mandatory: one that was deactivated
+                // earlier (DROPPED could be, before it became a main stage) is
+                // made selectable again. Nothing else about it changes.
+                if (type.isMainStage()) {
+                    for (SalesStage stage : typed) {
+                        if (!Boolean.TRUE.equals(stage.getIsActive())) {
+                            stage.setIsActive(true);
+                            repository.save(stage);
+                            log.info("Main sales stage \"{}\" (id {}) reactivated", stage.getName(), stage.getId());
+                        }
+                    }
+                }
+
                 continue;
             }
 
@@ -178,10 +193,25 @@ public class SalesStageService {
 
                 log.info("Sales stage \"{}\" (id {}) tagged as core stage {}", stage.getName(), stage.getId(), type);
 
+            } else if (candidates.size() > 1 && type.isMainStage()) {
+
+                SalesStage oldest = candidates.stream()
+                        .min(java.util.Comparator.comparing(SalesStage::getId))
+                        .orElseThrow();
+                oldest.setStageType(type);
+                if (!Boolean.TRUE.equals(oldest.getIsActive())) {
+                    oldest.setIsActive(true);
+                }
+                repository.save(oldest);
+
+                log.warn("{} stages match the name \"{}\": the oldest, \"{}\" (id {}), was tagged as main stage {}; "
+                                + "the others are retired into it at startup.",
+                        candidates.size(), type.getDefaultName(), oldest.getName(), oldest.getId(), type);
+
             } else if (candidates.size() > 1) {
 
-                log.error("Cannot tag a sales stage as {}: {} stages match the name \"{}\" - resolve manually.",
-                        type, candidates.size(), type.getDefaultName());
+                log.warn("{} untyped stages match the name \"{}\"; none tagged as {} - the startup retirement "
+                        + "moves their opportunities by name.", candidates.size(), type.getDefaultName(), type);
 
             } else if (type.isSeeded()) {
 

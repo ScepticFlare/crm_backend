@@ -21,6 +21,12 @@ public class OpportunitySearchCriteria {
     // Stable core-stage filter (used by the Postponed / Lost pages) - unlike
     // stageName it survives an Admin renaming the stage.
     private SalesStageType stageType;
+
+    // A retired historical stage (LEGACY_UNRESPONSIVE / LEGACY_INVALID):
+    // Opportunities still in it, or moved out of it into its main stage
+    // (UNRESPONSIVE -> DROPPED, INVALID -> LOST) and still there. Backs the
+    // Unresponsive / Invalid pages and their exports.
+    private SalesStageType formerStageType;
     // Only stages that are still being worked (the In Progress page). Set by
     // the /in-progress endpoint; also accepted by /export so the In Progress
     // page exports exactly the rows it lists.

@@ -47,6 +47,16 @@ public enum ActivityAction {
     // ROLE_CHANGED/MANAGER_CHANGED for Employee.
     REMARKS_UPDATED,
 
+    // Bulk WhatsApp (service.BulkWhatsAppService): the WhatsApp provider
+    // ACCEPTED the message for sending. Not proof of delivery - delivery /
+    // read status is tracked separately on whatsapp_send_log.
+    WHATSAPP_SENT,
+
+    // A number's WhatsApp opt-in / opt-out changed (service.WhatsAppConsentService).
+    // The authoritative history is whatsapp_consent_audit; this is the
+    // record-timeline entry.
+    WHATSAPP_CONSENT_CHANGED,
+
     // An employee connected / disconnected their own sending mailbox (Gmail or
     // Microsoft 365) - logged against ActivityModule.EMPLOYEE, see
     // service.mail.MailboxConnectionService.

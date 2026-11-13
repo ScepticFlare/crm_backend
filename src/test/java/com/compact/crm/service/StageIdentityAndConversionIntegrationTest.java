@@ -192,6 +192,28 @@ class StageIdentityAndConversionIntegrationTest {
         return opportunityService.convertLeadToOpportunity(validLead(company).getId(), req(stage, future()));
     }
 
+    // A custom stage an Admin created before custom stages were withdrawn -
+    // saved directly, as it already exists in older databases.
+    private SalesStage historicalCustomStage(String name) {
+        salesStageRepository.flush();   // any pending rename first (names are unique)
+        return salesStageRepository.saveAndFlush(SalesStage.builder().name(name).build());
+    }
+
+    // A historical typed stage row (UNRESPONSIVE / INVALID ...) as it exists in
+    // an older database - no longer created for a fresh one.
+    private SalesStage historicalTypedStage(String name, SalesStageType type) {
+        salesStageRepository.flush();
+        return salesStageRepository.saveAndFlush(SalesStage.builder().name(name).stageType(type).build());
+    }
+
+    // Puts an existing opportunity into a (historical) stage directly, the way
+    // older records already sit there - no workflow action can do it any more.
+    private Opportunity placeIn(Opportunity o, SalesStage stage) {
+        Opportunity stored = opportunityRepository.findById(o.getId()).orElseThrow();
+        stored.setSalesStage(stage);
+        return opportunityRepository.save(stored);
+    }
+
     private SalesStage stageOfType(SalesStageType type) {
         return salesStageRepository.findByStageType(type).get(0);
     }
@@ -383,12 +405,17 @@ class StageIdentityAndConversionIntegrationTest {
         // The only thing that makes a stage "WON" is its type.
         rename(SalesStageType.WON, "Closed Won");
 
-        SalesStageRequest r = new SalesStageRequest();
-        r.setName("WON");
-        SalesStage impostor = salesStageService.create(r);
+        SalesStage impostor = historicalCustomStage("WON");
 
         Opportunity o = convert("Impostor", "IN PROGRESS");
-        opportunityService.updateOpportunity(o.getId(), req(impostor.getName(), future()));
+
+        // it cannot be chosen (not a main stage)...
+        assertThatThrownBy(() -> opportunityService.updateOpportunity(o.getId(), req(impostor.getName(), future())))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not one of the main stages");
+
+        // ...and an older opportunity already in it is still not WON
+        placeIn(o, impostor);
 
         assertThatThrownBy(() -> customerService.convertOpportunity(o.getId(), customerRequest()))
                 .isInstanceOf(ResourceNotFoundException.class);
@@ -562,10 +589,10 @@ class StageIdentityAndConversionIntegrationTest {
     }
 
     @Test
-    void coreStages_canBeRenamed_butNotDeactivated() {
+    void theFiveMainStages_canBeRenamed_butNotDeactivated() {
 
-        for (SalesStageType type : List.of(SalesStageType.NEW, SalesStageType.IN_PROGRESS,
-                SalesStageType.POSTPONED, SalesStageType.WON, SalesStageType.LOST)) {
+        for (SalesStageType type : List.of(SalesStageType.IN_PROGRESS,
+                SalesStageType.POSTPONED, SalesStageType.WON, SalesStageType.LOST, SalesStageType.LEGACY_DROPPED)) {
 
             Long id = stageOfType(type).getId();
 
@@ -579,14 +606,18 @@ class StageIdentityAndConversionIntegrationTest {
     }
 
     @Test
-    void deactivatingACustomStage_keepsExistingOpportunities_butBlocksNewSelection() {
+    void anOlderCustomStage_keepsItsOpportunities_butCannotBeNewlySelected() {
 
-        SalesStageRequest r = new SalesStageRequest();
-        r.setName("Site Survey");
-        SalesStage custom = salesStageService.create(r);
+        SalesStage custom = historicalCustomStage("Site Survey");
 
-        Opportunity inCustom = convert("InCustom", "Site Survey");
+        // a custom stage can no longer be chosen, not even on conversion
+        assertThatThrownBy(() -> convert("NewInCustom", "Site Survey"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not one of the main stages");
 
+        Opportunity inCustom = placeIn(convert("InCustom", "IN PROGRESS"), custom);
+
+        // deactivating it (as before) still keeps its opportunities
         salesStageService.deactivate(custom.getId());
 
         // History is untouched and the record still loads and re-saves unchanged.
@@ -599,7 +630,7 @@ class StageIdentityAndConversionIntegrationTest {
         Opportunity other = convert("OtherCo", "IN PROGRESS");
         assertThatThrownBy(() -> opportunityService.updateOpportunity(other.getId(), req("Site Survey", future())))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("inactive");
+                .hasMessageContaining("not one of the main stages");
     }
 
     @Test
@@ -666,19 +697,22 @@ class StageIdentityAndConversionIntegrationTest {
     }
 
     @Test
-    void ensureCoreStages_doesNotGuessWhenSeveralStagesCouldMatch_orHijackALookalike() {
+    void ensureCoreStages_tagsTheOldestOfSameNamedMainStages_neverInventsOne_orHijacksALookalike() {
 
         salesStageRepository.deleteAll();
         salesStageRepository.flush();
-        salesStageRepository.save(SalesStage.builder().name("WON").build());
+        SalesStage oldest = salesStageRepository.save(SalesStage.builder().name("WON").build());
         salesStageRepository.save(SalesStage.builder().name("won").build());
         // a typo'd, user-created in-progress stage must not be silently adopted
         SalesStage typo = salesStageRepository.save(SalesStage.builder().name("IN_PROGESS").build());
 
         salesStageService.ensureCoreStages();
 
-        // ambiguous: neither "WON" nor "won" is tagged, and no third one is invented
-        assertThat(salesStageRepository.findByStageType(SalesStageType.WON)).isEmpty();
+        // WON is a mandatory main stage: both rows carry the same name, so the
+        // oldest is tagged (no meaning is guessed) and no third one is
+        // invented; LegacyStageRetirement merges the other into it.
+        assertThat(salesStageRepository.findByStageType(SalesStageType.WON))
+                .extracting(SalesStage::getId).containsExactly(oldest.getId());
         assertThat(salesStageRepository.findAll().stream().filter(s -> s.getName().equalsIgnoreCase("won"))).hasSize(2);
 
         // the lookalike keeps its identity; a proper IN PROGRESS stage is created next to it
@@ -756,21 +790,39 @@ class StageIdentityAndConversionIntegrationTest {
     }
 
     @Test
-    void employeeAndManager_canSelectAdminConfiguredStages() {
+    void employeeAndManager_canConvertIntoAnyMainStage_includingDropped_butNoOtherStage() {
 
-        SalesStageRequest r = new SalesStageRequest();
-        r.setName("Site Survey");
-        salesStageService.create(r);   // configured by the Admin
+        historicalCustomStage("Site Survey");
+        historicalTypedStage("UNRESPONSIVE", SalesStageType.LEGACY_UNRESPONSIVE);
+        historicalTypedStage("INVALID", SalesStageType.LEGACY_INVALID);
 
         for (Employee actor : List.of(employee, manager)) {
 
-            Lead lead = lead("Uses " + actor.getName(), LeadValidity.VALID, LeadStatus.VALID, employee);
-
             authenticateAs(actor);
 
-            Opportunity o = opportunityService.convertLeadToOpportunity(lead.getId(), req("Site Survey", future()));
+            for (String stage : List.of("IN PROGRESS", "POSTPONED", "WON", "LOST", "DROPPED")) {
 
-            assertThat(o.getSalesStage().getName()).isEqualTo("Site Survey");
+                Lead lead = lead("Uses " + stage + " " + actor.getName(), LeadValidity.VALID, LeadStatus.VALID, employee);
+
+                OpportunityRequest r = req(stage, future());
+                r.setLostReason("Budget cut");
+
+                Opportunity o = opportunityService.convertLeadToOpportunity(lead.getId(), r);
+
+                assertThat(o.getSalesStage().getName()).as(stage).isEqualTo(stage);
+            }
+
+            for (String stage : List.of("Site Survey", "UNRESPONSIVE", "INVALID")) {
+
+                Lead lead = lead("Refused " + stage + " " + actor.getName(), LeadValidity.VALID, LeadStatus.VALID, employee);
+
+                assertThatThrownBy(() -> opportunityService.convertLeadToOpportunity(lead.getId(), req(stage, future())))
+                        .as(stage)
+                        .isInstanceOf(IllegalArgumentException.class)
+                        .hasMessageContaining("not one of the main stages");
+
+                assertThat(opportunityRepository.existsByLeadId(lead.getId())).as(stage).isFalse();
+            }
         }
     }
 
@@ -834,9 +886,7 @@ class StageIdentityAndConversionIntegrationTest {
         // from the name: it is an ordinary, active, custom stage.
         rename(SalesStageType.LEGACY_DROPPED, "Dropped by Customer");
 
-        SalesStageRequest r = new SalesStageRequest();
-        r.setName("DROPPED");
-        SalesStage lookalike = salesStageService.create(r);
+        SalesStage lookalike = historicalCustomStage("DROPPED");
 
         assertThat(lookalike.getStageType()).isNull();
         assertThat(OpportunityWorkflow.isActive(lookalike)).isTrue();
@@ -875,16 +925,25 @@ class StageIdentityAndConversionIntegrationTest {
     // ===================================================== legacy closed stages (DROPPED / UNRESPONSIVE / INVALID)
 
     @Test
-    void legacyClosedStages_areTypedAndSeeded() {
+    void closedStages_droppedIsSeededAndMain_unresponsiveAndInvalidAreRetiredAndNotSeeded() {
 
         assertThat(salesStageRepository.findByStageType(SalesStageType.LEGACY_DROPPED)).hasSize(1);
-        assertThat(salesStageRepository.findByStageType(SalesStageType.LEGACY_UNRESPONSIVE)).hasSize(1);
-        assertThat(salesStageRepository.findByStageType(SalesStageType.LEGACY_INVALID)).hasSize(1);
+        // A fresh database no longer gets the retired UNRESPONSIVE / INVALID stages.
+        assertThat(salesStageRepository.findByStageType(SalesStageType.LEGACY_UNRESPONSIVE)).isEmpty();
+        assertThat(salesStageRepository.findByStageType(SalesStageType.LEGACY_INVALID)).isEmpty();
+        assertThat(SalesStageType.LEGACY_UNRESPONSIVE.retiredInto()).isEqualTo(SalesStageType.LEGACY_DROPPED);
+        assertThat(SalesStageType.LEGACY_INVALID.retiredInto()).isEqualTo(SalesStageType.LOST);
 
-        for (SalesStageType t : List.of(SalesStageType.LEGACY_DROPPED,
-                SalesStageType.LEGACY_UNRESPONSIVE, SalesStageType.LEGACY_INVALID)) {
+        assertThat(SalesStageType.LEGACY_DROPPED.isActive()).isFalse();
+        assertThat(SalesStageType.LEGACY_DROPPED.isCore()).isTrue();
+        assertThat(SalesStageType.LEGACY_DROPPED.isMainStage()).isTrue();
+
+        for (SalesStageType t : List.of(SalesStageType.LEGACY_UNRESPONSIVE, SalesStageType.LEGACY_INVALID)) {
             assertThat(t.isActive()).as(t.name()).isFalse();
             assertThat(t.isCore()).as(t.name()).isFalse();
+            assertThat(t.isMainStage()).as(t.name()).isFalse();
+            assertThat(t.isSeeded()).as(t.name()).isFalse();
+            assertThat(t.isRetired()).as(t.name()).isTrue();
         }
     }
 
@@ -922,15 +981,28 @@ class StageIdentityAndConversionIntegrationTest {
     }
 
     @Test
-    void renamingUnresponsiveAndInvalid_keepsThemClosedAndOnTheirPages() {
+    void renamedHistoricalUnresponsiveAndInvalid_notYetRetired_stayClosedAndOnTheirPages() {
 
-        rename(SalesStageType.LEGACY_UNRESPONSIVE, "Gone Quiet");
-        rename(SalesStageType.LEGACY_INVALID, "Not a Fit");
+        // Existing (renamed) rows of an older database, before the startup
+        // retirement has moved their opportunities.
+        historicalTypedStage("Gone Quiet", SalesStageType.LEGACY_UNRESPONSIVE);
+        historicalTypedStage("Not a Fit", SalesStageType.LEGACY_INVALID);
 
+        // They are no longer main stages: nothing can be moved into them...
         Opportunity u = convert("UnrespRename", "IN PROGRESS");
-        opportunityService.updateOpportunity(u.getId(), req("Gone Quiet", null));
-        Opportunity i = convert("InvalidRename", "IN PROGRESS");
-        opportunityService.updateOpportunity(i.getId(), req("Not a Fit", null));
+        assertThatThrownBy(() -> opportunityService.updateOpportunity(u.getId(), req("Gone Quiet", null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not one of the main stages");
+
+        // ...but opportunities already in them keep them, stay closed, are
+        // still listed on their own pages and can be re-saved unchanged.
+        placeIn(u, stageOfType(SalesStageType.LEGACY_UNRESPONSIVE));
+        Opportunity i = placeIn(convert("InvalidRename", "IN PROGRESS"), stageOfType(SalesStageType.LEGACY_INVALID));
+
+        OpportunityRequest resave = req("Not a Fit", null);
+        resave.setTitle("Still invalid");
+        assertThat(opportunityService.updateOpportunity(i.getId(), resave).getSalesStage().getStageType())
+                .isEqualTo(SalesStageType.LEGACY_INVALID);
 
         assertThat(OpportunityWorkflow.isActive(opportunityService.getOpportunityById(u.getId()))).isFalse();
         assertThat(OpportunityWorkflow.isActive(opportunityService.getOpportunityById(i.getId()))).isFalse();
@@ -944,6 +1016,12 @@ class StageIdentityAndConversionIntegrationTest {
         iPage.setStageType(SalesStageType.LEGACY_INVALID);
         assertThat(opportunityService.searchOpportunities(iPage, 0, 50, null, null).getContent())
                 .extracting(Opportunity::getId).containsExactly(i.getId());
+
+        // the pages' own filter (formerStageType) also lists them
+        OpportunitySearchCriteria uFormer = new OpportunitySearchCriteria();
+        uFormer.setFormerStageType(SalesStageType.LEGACY_UNRESPONSIVE);
+        assertThat(opportunityService.searchOpportunities(uFormer, 0, 50, null, null).getContent())
+                .extracting(Opportunity::getId).containsExactly(u.getId());
     }
 
     @Test

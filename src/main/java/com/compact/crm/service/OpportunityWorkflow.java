@@ -48,6 +48,13 @@ public final class OpportunityWorkflow {
         return stage.getStageType() == null || stage.getStageType().isActive();
     }
 
+    // One of the five main stages (IN PROGRESS, WON, LOST, POSTPONED,
+    // DROPPED) - the only stages an Opportunity can be newly put into. A
+    // custom (untyped), retired (NEW) or historical stage is not.
+    public static boolean isMainStage(SalesStage stage) {
+        return stage != null && stage.getStageType() != null && stage.getStageType().isMainStage();
+    }
+
     public static boolean isActive(Opportunity o) {
         return o.getSalesStage() != null && isActive(o.getSalesStage());
     }

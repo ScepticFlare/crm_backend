@@ -260,6 +260,33 @@ public final class OpportunitySpecifications {
         return (root, query, cb) -> cb.equal(root.get("salesStage").get("stageType"), stageType);
     }
 
+    // Opportunities that belong to a retired historical stage's page: still in
+    // that stage, or moved out of it (stored provenance) into the main stage
+    // it was retired into and still there - one reopened since is no longer
+    // listed. See LegacyStageRetirement.
+    public static Specification<Opportunity> formerStageType(SalesStageType former) {
+
+        if (former == null) {
+            return null;
+        }
+
+        SalesStageType into = former.retiredInto();
+
+        return (root, query, cb) -> {
+
+            jakarta.persistence.criteria.Path<Object> type = root.get("salesStage").get("stageType");
+            jakarta.persistence.criteria.Predicate stillThere = cb.equal(type, former);
+
+            if (into == null) {
+                return stillThere;
+            }
+
+            return cb.or(stillThere, cb.and(
+                    cb.equal(type, into),
+                    cb.equal(root.get("retiredStageType"), former)));
+        };
+    }
+
     // Opportunities that must have a next follow-up: an active stage or
     // POSTPONED (see OpportunityWorkflow.requiresNextFollowUp).
     public static Specification<Opportunity> requiresNextFollowUp() {

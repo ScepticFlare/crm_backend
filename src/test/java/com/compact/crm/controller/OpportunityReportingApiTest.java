@@ -882,4 +882,54 @@ class OpportunityReportingApiTest {
 
         assertThat(csv(export).get(1).get(1)).isNotBlank();
     }
+
+    @Test
+    void previouslyNew_isInTheListAndTheExport_andALargeSelectionExportsOverPost() throws Exception {
+
+        String closing = BusinessClock.today().plusDays(30).toString();
+
+        Map<String, Object> first = opportunityBody("IN PROGRESS", closing);
+        first.put("title", "A - was new");
+        Map<String, Object> second = opportunityBody("IN PROGRESS", closing);
+        second.put("title", "B - always in progress");
+
+        long marked = read(perform(post("/api/opportunities/convert/" + storedLead("PrevNew Co", admin, productA, batteryA).getId())
+                .contentType("application/json").content(json(first)), adminToken, 200))
+                .get("id").asLong();
+        long plain = read(perform(post("/api/opportunities/convert/" + storedLead("PrevNew Plain", admin, productA, batteryA).getId())
+                .contentType("application/json").content(json(second)), adminToken, 200))
+                .get("id").asLong();
+
+        // as the NEW-stage retirement records it
+        com.compact.crm.entity.Opportunity o = opportunityRepository.findById(marked).orElseThrow();
+        o.setMigratedFromNewAt(java.time.LocalDateTime.now());
+        opportunityRepository.save(o);
+        entityManager.flush();
+
+        mockMvc.perform(get("/api/opportunities").header("Authorization", adminToken).param("search", "PrevNew")
+                        .param("sortBy", "title").param("sortDir", "asc"))
+                .andExpect(jsonPath("$.content[0].id").value(marked))
+                .andExpect(jsonPath("$.content[0].previouslyNew").value(true))
+                .andExpect(jsonPath("$.content[1].id").value(plain))
+                .andExpect(jsonPath("$.content[1].previouslyNew").value(false));
+
+        // A cross-page selection far too large for a URL: the two real ids
+        // plus 3,000 ids that match nothing. Sent as a POST form body; the
+        // export is still scoped and filtered (unknown ids are ignored).
+        StringBuilder ids = new StringBuilder(marked + "," + plain);
+        for (long extra = 90_000_000L; extra < 90_003_000L; extra++) {
+            ids.append(',').append(extra);
+        }
+
+        MvcResult export = perform(post("/api/opportunities/export")
+                .contentType(org.springframework.http.MediaType.APPLICATION_FORM_URLENCODED)
+                .content("format=csv&columns=title,previouslyNew&sortBy=title&sortDir=asc&ids=" + ids),
+                adminToken, 200);
+
+        List<List<String>> rows = csv(export);
+        assertThat(rows.get(0)).containsExactly("Opportunity Title", "Previously New");
+        assertThat(rows).hasSize(3);
+        assertThat(rows.get(1).get(1)).isEqualTo("Yes");
+        assertThat(rows.get(2).get(1)).isBlank();
+    }
 }

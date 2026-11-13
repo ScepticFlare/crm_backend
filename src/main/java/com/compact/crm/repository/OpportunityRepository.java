@@ -5,6 +5,7 @@ import com.compact.crm.entity.Opportunity;
 import com.compact.crm.enums.LeadValidity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -169,4 +170,91 @@ public interface OpportunityRepository extends JpaRepository<Opportunity, Long>,
     // Which of these leads already have an Opportunity (drives "converted").
     @Query("SELECT DISTINCT o.lead.id FROM Opportunity o WHERE o.lead.id IN :leadIds")
     List<Long> findLeadIdsWithOpportunity(@Param("leadIds") List<Long> leadIds);
+
+    // ---- retirement of the NEW stage (service.NewStageRetirement) ----
+
+    // [id, title] of every Opportunity in the given stage, row-locked (SELECT
+    // ... FOR UPDATE) until the retirement's transaction ends.
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT o.id, o.title FROM Opportunity o WHERE o.salesStage.id = :stageId ORDER BY o.id")
+    List<Object[]> findIdAndTitleBySalesStageId(@Param("stageId") Long stageId);
+
+    // Moves every Opportunity of one stage to another and records the
+    // provenance, in one statement. A bulk update on purpose: it changes only
+    // these two columns - no entity callback runs, so updatedAt, and every
+    // other field and relationship, is left exactly as it was.
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE Opportunity o
+        SET o.salesStage = :target, o.migratedFromNewAt = :movedAt
+        WHERE o.salesStage.id = :sourceStageId
+    """)
+    int moveFromRetiredNewStage(
+            @Param("sourceStageId") Long sourceStageId,
+            @Param("target") com.compact.crm.entity.SalesStage target,
+            @Param("movedAt") LocalDateTime movedAt);
+
+    // ---- retirement of the remaining non-main stages (service.LegacyStageRetirement) ----
+
+    // [id, title, subStatus] of every Opportunity in the given stage, row-locked
+    // (SELECT ... FOR UPDATE) until the retirement's transaction ends, so the
+    // bulk move changes exactly these rows.
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT o.id, o.title, o.subStatus FROM Opportunity o WHERE o.salesStage.id = :stageId ORDER BY o.id")
+    List<Object[]> findIdTitleAndSubStatusBySalesStageId(@Param("stageId") Long stageId);
+
+    // Moves every Opportunity of a retired stage to a main stage, sets the
+    // sub-status (null clears it - only IN PROGRESS has one) and records the
+    // provenance, in one statement. A bulk update on purpose: only these
+    // columns change - no entity callback runs, so updatedAt, and every other
+    // field and relationship, is left exactly as it was.
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE Opportunity o
+        SET o.salesStage = :target, o.subStatus = :subStatus,
+            o.retiredStageType = :retiredType, o.retiredStageName = :retiredName,
+            o.retiredStageMovedAt = :movedAt
+        WHERE o.salesStage.id = :sourceStageId
+    """)
+    int moveFromRetiredStageSettingSubStatus(
+            @Param("sourceStageId") Long sourceStageId,
+            @Param("target") com.compact.crm.entity.SalesStage target,
+            @Param("subStatus") com.compact.crm.enums.OpportunitySubStatus subStatus,
+            @Param("retiredType") com.compact.crm.enums.SalesStageType retiredType,
+            @Param("retiredName") String retiredName,
+            @Param("movedAt") LocalDateTime movedAt);
+
+    // As above, but leaves the stored sub-status as it is (a custom stage
+    // moved to IN PROGRESS whose name names no sub-status).
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE Opportunity o
+        SET o.salesStage = :target,
+            o.retiredStageType = :retiredType, o.retiredStageName = :retiredName,
+            o.retiredStageMovedAt = :movedAt
+        WHERE o.salesStage.id = :sourceStageId
+    """)
+    int moveFromRetiredStageKeepingSubStatus(
+            @Param("sourceStageId") Long sourceStageId,
+            @Param("target") com.compact.crm.entity.SalesStage target,
+            @Param("retiredType") com.compact.crm.enums.SalesStageType retiredType,
+            @Param("retiredName") String retiredName,
+            @Param("movedAt") LocalDateTime movedAt);
+
+    // [id, title] of every Opportunity with no stage at all, row-locked.
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT o.id, o.title FROM Opportunity o WHERE o.salesStage IS NULL ORDER BY o.id")
+    List<Object[]> findIdAndTitleWithoutSalesStage();
+
+    // Moves every Opportunity with no stage to IN PROGRESS (bulk; nothing else
+    // changes - no entity callback runs, so updatedAt is kept).
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE Opportunity o
+        SET o.salesStage = :target, o.retiredStageMovedAt = :movedAt
+        WHERE o.salesStage IS NULL
+    """)
+    int moveOpportunitiesWithoutStage(
+            @Param("target") com.compact.crm.entity.SalesStage target,
+            @Param("movedAt") LocalDateTime movedAt);
 }

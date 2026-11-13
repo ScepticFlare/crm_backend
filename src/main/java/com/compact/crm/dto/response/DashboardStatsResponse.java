@@ -19,10 +19,10 @@ public class DashboardStatsResponse {
     private long opportunities;
     private long followUps;
 
-    // Opportunity count per pipeline bucket (NEW, IN_PROGRESS, POSTPONED, WON,
-    // LOST, OTHER) - every opportunity in scope is counted exactly once,
-    // grouped by sales stage name (e.g. "NEW" -> 4) -
-    // covers every open opportunity in scope, not just the first 50.
+    // Opportunity count per main stage (IN_PROGRESS, POSTPONED, WON, LOST,
+    // DROPPED), by stable stage type - covers every opportunity in scope, not
+    // just the first 50. Together with otherStages every opportunity in scope
+    // is counted exactly once.
     private Map<String, Long> pipeline;
 
     private List<RecentLeadResponse> recentLeads;
@@ -34,8 +34,14 @@ public class DashboardStatsResponse {
     // breakdown of it, not extra opportunities.
     private Map<String, Long> inProgressBreakdown;
 
-    // Internal carrier for DashboardService.tally - the two maps that fill
-    // `pipeline` and `inProgressBreakdown`.
-    public record PipelineCounts(Map<String, Long> pipeline, Map<String, Long> inProgressBreakdown) {
+    // Opportunities still in a stage that is not one of the five main stages
+    // (historical UNRESPONSIVE / INVALID, or a custom stage): counted here so
+    // none is silently left out, without presenting them as main stages.
+    private Map<String, Long> otherStages;
+
+    // Internal carrier for DashboardService.tally - the maps that fill
+    // `pipeline`, `inProgressBreakdown` and `otherStages`.
+    public record PipelineCounts(
+            Map<String, Long> pipeline, Map<String, Long> inProgressBreakdown, Map<String, Long> otherStages) {
     }
 }

@@ -91,7 +91,10 @@ public class FollowUpController {
         return followUpService.bulkDeleteFollowUps(request.getIds());
     }
 
-    @GetMapping("/export")
+    // GET, or POST with the same parameters as a form body - used for a
+    // large selection whose `ids` would not fit in a URL. Same scope,
+    // permission and filters either way.
+    @RequestMapping(value = "/export", method = {RequestMethod.GET, RequestMethod.POST})
     public ResponseEntity<byte[]> exportFollowUps(
             @ModelAttribute FollowUpSearchCriteria criteria,
             @RequestParam(required = false) String sortBy,

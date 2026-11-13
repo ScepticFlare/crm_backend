@@ -334,7 +334,7 @@ class OpportunityWorkflowIntegrationTest {
 
         Opportunity o = convert("BadSub", "IN PROGRESS");
 
-        for (String stage : List.of("NEW", "WON", "LOST", "POSTPONED")) {
+        for (String stage : List.of("WON", "LOST", "POSTPONED", "DROPPED")) {
 
             OpportunityRequest r = request(stage, future());
             r.setSubStatus(OpportunitySubStatus.NEGOTIATION);

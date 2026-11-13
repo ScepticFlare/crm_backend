@@ -148,6 +148,8 @@ public class OpportunityService {
 
         SalesStage salesStage = resolveStage(request.getSalesStage());
 
+        requireMainStageIfChanged(null, salesStage);
+
         Opportunity opportunity = Opportunity.builder()
                 .title(request.getTitle())
                 .productValue(requireValue(request.getProductValue()))
@@ -207,12 +209,47 @@ public class OpportunityService {
     // SalesStageController), so an Opportunity save never creates one.
     private SalesStage resolveStage(String name) {
 
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("Please select a sales stage.");
+        }
+
         try {
             return salesStageService.getByName(name);
         } catch (ResourceNotFoundException e) {
             throw new IllegalArgumentException(
                     "Sales stage \"" + name + "\" does not exist. Ask an Admin to add it first.");
         }
+    }
+
+    // Only the five main stages (In Progress, Won, Lost, Postponed, Dropped)
+    // can be newly chosen - on conversion (`current` is null) or when an edit
+    // changes the stage. A retired (NEW), custom or historical stage is
+    // refused here, before anything is validated or changed; an Opportunity
+    // already in such a stage can still be re-saved without changing it.
+    private static void requireMainStageIfChanged(SalesStage current, SalesStage chosen) {
+
+        boolean changed = current == null || !Objects.equals(current.getId(), chosen.getId());
+
+        if (!changed || OpportunityWorkflow.isMainStage(chosen)) {
+            return;
+        }
+
+        SalesStageType type = chosen.getStageType();
+
+        if (type == SalesStageType.LEGACY_QUOTATION_SENT || type == SalesStageType.LEGACY_NEGOTIATION) {
+            throw new IllegalArgumentException(
+                    "\"" + chosen.getName() + "\" is now a sub-status of In Progress. "
+                            + "Select the In Progress stage and choose it as the sub-status.");
+        }
+
+        if (type == SalesStageType.NEW) {
+            throw new IllegalArgumentException(
+                    "The \"" + chosen.getName() + "\" stage has been retired. Select In Progress instead.");
+        }
+
+        throw new IllegalArgumentException(
+                "\"" + chosen.getName() + "\" is not one of the main stages. "
+                        + "Select In Progress, Won, Lost, Postponed or Dropped.");
     }
 
     // Opportunity value is mandatory on create and on every edit: a number,
@@ -964,6 +1001,7 @@ public class OpportunityService {
                 OpportunitySpecifications.search(criteria.getSearch()),
                 OpportunitySpecifications.hasStageName(criteria.getStageName()),
                 OpportunitySpecifications.hasStageType(criteria.getStageType()),
+                OpportunitySpecifications.formerStageType(criteria.getFormerStageType()),
                 OpportunitySpecifications.hasSalesStageId(criteria.getSalesStageId()),
                 OpportunitySpecifications.hasAssignedEmployeeId(criteria.getAssignedEmployeeId()),
                 OpportunitySpecifications.hasIndustryId(criteria.getIndustryId()),
@@ -1003,6 +1041,8 @@ public class OpportunityService {
         // Existing stage must be used as-is - an edit never creates a stage
         // (stage configuration is Admin-only).
         SalesStage salesStage = resolveStage(request.getSalesStage());
+
+        requireMainStageIfChanged(opportunity.getSalesStage(), salesStage);
 
         // A WON opportunity that already became a Customer cannot be moved
         // out of WON (it would orphan the Customer link). Decided by stage

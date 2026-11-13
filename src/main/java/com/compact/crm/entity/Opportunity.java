@@ -60,6 +60,32 @@ public class Opportunity {
     // reminder is due while this differs from postponedReviewDate.
     private LocalDate postponedReminderAcknowledgedFor;
 
+    // Provenance: when this Opportunity was moved from the retired NEW stage
+    // to IN PROGRESS (service.NewStageRetirement). Null for every Opportunity
+    // that was never in NEW. Written only by that one-off move - no edit,
+    // stage change or API request sets or clears it (it is not part of
+    // OpportunityRequest), so "Previously New" is permanent.
+    @Column(name = "migrated_from_new_at")
+    private LocalDateTime migratedFromNewAt;
+
+    // Provenance: the retired stage (Unresponsive, Invalid, the old
+    // Quotation Sent / Negotiation stages, or a custom stage) this
+    // Opportunity was moved out of when the five-main-stage workflow was
+    // completed (service.LegacyStageRetirement), and when. Null for every
+    // Opportunity that was never in such a stage. Written only by that
+    // one-off move - not part of OpportunityRequest, so no edit or stage
+    // change sets or clears it. retiredStageType is null for a custom stage
+    // (it had no type); retiredStageName keeps its name as it was then.
+    @Enumerated(EnumType.STRING)
+    @Column(name = "retired_stage_type", length = 30)
+    private com.compact.crm.enums.SalesStageType retiredStageType;
+
+    @Column(name = "retired_stage_name")
+    private String retiredStageName;
+
+    @Column(name = "retired_stage_moved_at")
+    private LocalDateTime retiredStageMovedAt;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
@@ -130,6 +156,14 @@ public class Opportunity {
                 && OpportunityWorkflow.is(salesStage, com.compact.crm.enums.SalesStageType.POSTPONED)
                 && !postponedReviewDate.isAfter(BusinessClock.today())
                 && !postponedReviewDate.equals(postponedReminderAcknowledgedFor);
+    }
+
+    // "Previously New" indicator: this Opportunity was in the retired NEW
+    // stage and was moved to IN PROGRESS. From the stored provenance only,
+    // never from the current stage.
+    @JsonProperty("previouslyNew")
+    public boolean isPreviouslyNew() {
+        return migratedFromNewAt != null;
     }
 
     // Sub-status as users should see it - includes historical Opportunities

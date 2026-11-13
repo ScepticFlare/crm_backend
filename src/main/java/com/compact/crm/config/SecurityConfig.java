@@ -88,6 +88,14 @@ public class SecurityConfig {
                                 "/api/public/industries", "/api/public/products", "/api/public/batteries"
                         ).permitAll()
 
+                        // WAHA (WhatsApp provider) webhook. No JWT - it is
+                        // authenticated by WAHA's HMAC signature over the raw
+                        // body inside WhatsAppWebhookController, and rejected
+                        // outright when no HMAC key is configured here.
+                        .requestMatchers(
+                                HttpMethod.POST, "/api/public/whatsapp/webhook"
+                        ).permitAll()
+
                         // OAuth redirect back from Google / Microsoft after an
                         // employee approves connecting their mailbox. A top-level
                         // browser navigation from the provider carries no JWT; the

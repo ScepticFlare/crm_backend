@@ -21,6 +21,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -124,14 +125,60 @@ class SalesStageControllerSecurityTest {
     }
 
     @Test
-    void admin_canCreateRenameDeactivateAndActivateStage() throws Exception {
+    void admin_cannotCreateAStage_theFiveMainStagesAreFixed() throws Exception {
+
+        long before = salesStageRepository.count();
 
         mockMvc.perform(post("/api/sales-stages")
                         .header("Authorization", adminToken)
                         .contentType("application/json").content(BODY))
-                .andExpect(status().isOk());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("cannot be added")));
 
-        assertThat(salesStageRepository.findByNameIgnoreCase("BRAND NEW STAGE")).isPresent();
+        assertThat(salesStageRepository.findByNameIgnoreCase("BRAND NEW STAGE")).isEmpty();
+        assertThat(salesStageRepository.count()).isEqualTo(before);
+    }
+
+    @Test
+    void theStageList_offersExactlyTheFiveMainStages_neverCustomOrRetiredOnes() throws Exception {
+
+        // a historical custom stage (stageId, from setUp) and a retired NEW row
+        salesStageRepository.save(SalesStage.builder().name("OLD NEW")
+                .stageType(com.compact.crm.enums.SalesStageType.NEW).build());
+
+        mockMvc.perform(get("/api/sales-stages").header("Authorization", employeeToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(5))
+                .andExpect(jsonPath("$[*].stageType").value(org.hamcrest.Matchers.contains(
+                        "IN_PROGRESS", "POSTPONED", "WON", "LOST", "LEGACY_DROPPED")))
+                .andExpect(jsonPath("$[*].mainStage").value(org.hamcrest.Matchers.everyItem(
+                        org.hamcrest.Matchers.is(true))));
+    }
+
+    @Test
+    void admin_cannotReactivateTheRetiredNewStage_orDeactivateDropped() throws Exception {
+
+        SalesStage retired = salesStageRepository.save(SalesStage.builder().name("OLD NEW")
+                .stageType(com.compact.crm.enums.SalesStageType.NEW).build());
+        retired.setIsActive(false);
+        salesStageRepository.save(retired);
+
+        mockMvc.perform(put("/api/sales-stages/" + retired.getId() + "/activate").header("Authorization", adminToken))
+                .andExpect(status().isBadRequest());
+
+        assertThat(salesStageRepository.findById(retired.getId()).orElseThrow().getIsActive()).isFalse();
+
+        Long droppedId = salesStageRepository.findByStageType(com.compact.crm.enums.SalesStageType.LEGACY_DROPPED)
+                .get(0).getId();
+
+        mockMvc.perform(delete("/api/sales-stages/" + droppedId).header("Authorization", adminToken))
+                .andExpect(status().isBadRequest());
+
+        assertThat(salesStageRepository.findById(droppedId).orElseThrow().getIsActive()).isTrue();
+    }
+
+    @Test
+    void admin_canRenameAndDeactivateAnExistingNonMainStage_butNeverReactivateIt() throws Exception {
 
         mockMvc.perform(put("/api/sales-stages/" + stageId)
                         .header("Authorization", adminToken)
@@ -145,10 +192,12 @@ class SalesStageControllerSecurityTest {
 
         assertThat(salesStageRepository.findById(stageId).orElseThrow().getIsActive()).isFalse();
 
+        // Only the five main stages are ever active: a custom / retired stage
+        // stays withdrawn, enforced by the API (not just hidden in the UI).
         mockMvc.perform(put("/api/sales-stages/" + stageId + "/activate").header("Authorization", adminToken))
-                .andExpect(status().isOk());
+                .andExpect(status().isBadRequest());
 
-        assertThat(salesStageRepository.findById(stageId).orElseThrow().getIsActive()).isTrue();
+        assertThat(salesStageRepository.findById(stageId).orElseThrow().getIsActive()).isFalse();
     }
 
     @Test

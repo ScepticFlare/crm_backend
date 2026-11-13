@@ -52,7 +52,12 @@ public class DashboardService {
     private final AccessControlService accessControlService;
 
     private static final List<String> PIPELINE_BUCKETS =
-            List.of("NEW", "IN_PROGRESS", "POSTPONED", "WON", "LOST", "OTHER");
+            List.of("IN_PROGRESS", "POSTPONED", "WON", "LOST", "DROPPED");
+
+    // Stages outside the five main stages that existing opportunities may
+    // still be in. Counted separately (never silently dropped, never shown as
+    // extra main stages).
+    private static final List<String> OTHER_STAGE_BUCKETS = List.of("UNRESPONSIVE", "INVALID", "CUSTOM");
 
     public DashboardStatsResponse getStats() {
 
@@ -89,7 +94,8 @@ public class DashboardService {
         return new DashboardStatsResponse(
                 leadCount, customerCount, opportunityCount, followUpCount,
                 pipelineCounts.pipeline(), recentLeads, upcomingFollowUps,
-                pipelineCounts.inProgressBreakdown()
+                pipelineCounts.inProgressBreakdown(),
+                pipelineCounts.otherStages()
         );
     }
 
@@ -105,20 +111,27 @@ public class DashboardService {
     }
 
     // Folds [stage name, stage type, sub-status, count] rows into the
-    // dashboard buckets. Every opportunity lands in exactly one pipeline
-    // bucket, decided by the stage's stable TYPE - not its display name - so
-    // an Admin renaming WON / LOST / POSTPONED / IN PROGRESS cannot move
-    // opportunities between buckets:
-    //  - IN_PROGRESS stages and the historical QUOTATION SENT / NEGOTIATION
-    //    stages (now sub-statuses of IN PROGRESS) all count as IN_PROGRESS;
-    //  - the in-progress breakdown then splits those same opportunities by
-    //    sub-status, so it sums to IN_PROGRESS rather than adding to it.
-    // Untyped (custom / historical) stages fall into OTHER.
+    // dashboard buckets. Every opportunity is counted exactly once, decided by
+    // the stage's stable TYPE - not its display name - so an Admin renaming a
+    // stage cannot move opportunities between buckets:
+    //  - the pipeline has exactly the five main stages. IN_PROGRESS also
+    //    takes the historical QUOTATION SENT / NEGOTIATION stages (now
+    //    sub-statuses of IN PROGRESS) and the retired NEW stage (its
+    //    opportunities are moved to IN PROGRESS at startup, so this is only a
+    //    safety net); the in-progress breakdown splits those same
+    //    opportunities by sub-status, so it sums to IN_PROGRESS;
+    //  - the historical UNRESPONSIVE / INVALID stages and custom (untyped)
+    //    stages are not main stages: they are counted in otherStages instead.
     static DashboardStatsResponse.PipelineCounts tally(List<Object[]> rows) {
 
         Map<String, Long> pipeline = new LinkedHashMap<>();
         for (String bucket : PIPELINE_BUCKETS) {
             pipeline.put(bucket, 0L);
+        }
+
+        Map<String, Long> otherStages = new LinkedHashMap<>();
+        for (String bucket : OTHER_STAGE_BUCKETS) {
+            otherStages.put(bucket, 0L);
         }
 
         Map<String, Long> breakdown = new LinkedHashMap<>();
@@ -132,20 +145,24 @@ public class DashboardService {
             Object sub = row[2];
             long count = ((Number) row[3]).longValue();
 
-            String bucket;
+            String other = type == null ? "CUSTOM"
+                    : type == SalesStageType.LEGACY_UNRESPONSIVE ? "UNRESPONSIVE"
+                    : type == SalesStageType.LEGACY_INVALID ? "INVALID"
+                    : null;
 
-            if (type == null) {
-                bucket = "OTHER";
-            } else {
-                bucket = switch (type) {
-                    case NEW -> "NEW";
-                    case POSTPONED -> "POSTPONED";
-                    case WON -> "WON";
-                    case LOST -> "LOST";
-                    case IN_PROGRESS, LEGACY_QUOTATION_SENT, LEGACY_NEGOTIATION -> "IN_PROGRESS";
-                    case LEGACY_DROPPED, LEGACY_UNRESPONSIVE, LEGACY_INVALID -> "OTHER";
-                };
+            if (other != null) {
+                otherStages.merge(other, count, Long::sum);
+                continue;
             }
+
+            String bucket = switch (type) {
+                case POSTPONED -> "POSTPONED";
+                case WON -> "WON";
+                case LOST -> "LOST";
+                case LEGACY_DROPPED -> "DROPPED";
+                case IN_PROGRESS, LEGACY_QUOTATION_SENT, LEGACY_NEGOTIATION, NEW -> "IN_PROGRESS";
+                case LEGACY_UNRESPONSIVE, LEGACY_INVALID -> throw new IllegalStateException("counted above");
+            };
 
             pipeline.merge(bucket, count, Long::sum);
 
@@ -160,6 +177,6 @@ public class DashboardService {
             }
         }
 
-        return new DashboardStatsResponse.PipelineCounts(pipeline, breakdown);
+        return new DashboardStatsResponse.PipelineCounts(pipeline, breakdown, otherStages);
     }
 }

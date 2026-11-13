@@ -1,0 +1,14 @@
+-- Five-main-stage workflow: the NEW opportunity stage is retired.
+--
+-- Purely additive. Adds the provenance column behind the "Previously New"
+-- indicator: when an Opportunity was moved from the retired NEW stage to
+-- IN PROGRESS. NULL for every Opportunity that was never in NEW, so an
+-- Opportunity that was always In Progress never shows the indicator.
+--
+-- No row is modified here. The move itself is done once at startup by
+-- service.NewStageRetirement, right after SalesStageService.ensureCoreStages
+-- has resolved the stable stage types (NEW / IN PROGRESS are found by
+-- sales_stages.stage_type, never by their editable names). It changes only
+-- sales_stage_id and this column, writes a history entry per Opportunity, and
+-- keeps the NEW stage row (inactive) for referential integrity and history.
+ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS migrated_from_new_at TIMESTAMP NULL;

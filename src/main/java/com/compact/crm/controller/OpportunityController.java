@@ -104,7 +104,9 @@ public class OpportunityController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        criteria.setStageType(SalesStageType.LEGACY_UNRESPONSIVE);
+        // Unresponsive was retired into DROPPED: still-unresponsive ones plus
+        // those moved to Dropped (provenance) and still there.
+        criteria.setFormerStageType(SalesStageType.LEGACY_UNRESPONSIVE);
         return opportunityService.searchOpportunities(criteria, page, size, sortBy, sortDir);
     }
 
@@ -116,7 +118,9 @@ public class OpportunityController {
             @RequestParam(required = false) String sortBy,
             @RequestParam(required = false) String sortDir
     ) {
-        criteria.setStageType(SalesStageType.LEGACY_INVALID);
+        // Invalid was retired into LOST: still-invalid ones plus those moved to
+        // Lost (provenance) and still there.
+        criteria.setFormerStageType(SalesStageType.LEGACY_INVALID);
         return opportunityService.searchOpportunities(criteria, page, size, sortBy, sortDir);
     }
 
@@ -215,6 +219,8 @@ public class OpportunityController {
         c.put("postponedReviewDate", TableExport.Column.date("Postponed Review Date", Opportunity::getPostponedReviewDate));
         c.put("postponedReason", TableExport.Column.text("Postponed Reason", Opportunity::getPostponedReason));
         c.put("lostReason", TableExport.Column.text("Lost Reason", Opportunity::getLostReason));
+        c.put("previouslyNew", TableExport.Column.text("Previously New", o -> o.isPreviouslyNew() ? "Yes" : null));
+        c.put("retiredStageName", TableExport.Column.text("Previous Stage (retired)", Opportunity::getRetiredStageName));
         c.put("createdAt", TableExport.Column.dateTime("Created Date", Opportunity::getCreatedAt));
         c.put("updatedAt", TableExport.Column.dateTime("Last Modified", Opportunity::getUpdatedAt));
 
@@ -232,7 +238,10 @@ public class OpportunityController {
     //  - `ids`: export exactly these rows (still scoped and filtered).
     //  - `excludeIds`: with no `ids`, every matching row except these - the
     //    "select all N matching records" selection minus unticked rows.
-    @GetMapping("/export")
+    // GET, or POST with the same parameters as a form body - used for a
+    // large selection whose `ids` would not fit in a URL. Same scope,
+    // permission and filters either way.
+    @RequestMapping(value = "/export", method = {RequestMethod.GET, RequestMethod.POST})
     public ResponseEntity<byte[]> exportOpportunities(
             @ModelAttribute OpportunitySearchCriteria criteria,
             @RequestParam(required = false) String sortBy,

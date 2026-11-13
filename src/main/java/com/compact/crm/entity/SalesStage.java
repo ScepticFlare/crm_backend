@@ -45,6 +45,13 @@ public class SalesStage {
         return com.compact.crm.service.OpportunityWorkflow.isActive(this);
     }
 
+    // Computed for the UI: one of the five main stages, i.e. a stage the
+    // stage dropdowns and filters may offer (see SalesStageType.isMainStage).
+    @JsonProperty("mainStage")
+    public boolean isMainStage() {
+        return com.compact.crm.service.OpportunityWorkflow.isMainStage(this);
+    }
+
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
